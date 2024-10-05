@@ -76,6 +76,8 @@ steps:
         --output-validator-meta-collection "$$snapshot_dir/validators.json" \
         --output-stake-meta-collection "$$snapshot_dir/stakes.json"
 
+  - wait: ~
+
   - label: ":floppy_disk: :arrow_left: :cloud: Fetch past validator data"
     commands:
     - 'snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)'
