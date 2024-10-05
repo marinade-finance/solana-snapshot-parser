@@ -68,8 +68,18 @@ pub fn generate_stake_meta_collection(bank: &Arc<Bank>) -> anyhow::Result<StakeM
     let history: StakeHistory = bincode::deserialize(&history_account.data)?;
     info!("Stake history loaded.");
 
-    let stake_accounts_raw =
-        bank.get_program_accounts(&solana_program::stake::program::ID, &ScanConfig::default())?;
+    // let stake_accounts_raw =
+    //     bank.get_program_accounts(&solana_program::stake::program::ID, &ScanConfig::default())?;
+
+    let stake_accounts_raw = bank.get_filtered_indexed_accounts(
+        &IndexKey::ProgramId(solana_program::stake::program::ID.clone()),
+        |_| true,
+        &ScanConfig {
+            collect_all_unsorted: true,
+            ..ScanConfig::default()
+        },
+        None,
+    )?;
     info!("Stake accounts loaded: {}", stake_accounts_raw.len());
 
     let mut stake_metas: Vec<StakeMeta> = Default::default();
