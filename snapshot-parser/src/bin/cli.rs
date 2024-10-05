@@ -1,10 +1,10 @@
 use env_logger::{Builder, Env};
 use log::LevelFilter;
 use snapshot_parser::utils::write_to_json_file;
-use std::fs;
+use std::{fs, thread::spawn};
 use {
     clap::Parser,
-    log::info,
+    log::{error, info},
     snapshot_parser::{bank_loader::create_bank_from_ledger, stake_meta, validator_meta},
     std::path::PathBuf,
 };
@@ -44,16 +44,52 @@ fn main() -> anyhow::Result<()> {
     info!("Creating bank from ledger path: {:?}", &args.ledger_path);
     let bank = create_bank_from_ledger(&args.ledger_path)?;
 
-    info!("Creating validator meta collection...");
-    let validator_meta_collection = validator_meta::generate_validator_collection(&bank)?;
-    write_to_json_file(
-        &validator_meta_collection,
-        &args.output_validator_meta_collection,
-    )?;
+    let validator_meta_collection_handle = {
+        let bank = bank.clone();
+        spawn(move || {
+            info!("Creating validator meta collection...");
 
-    info!("Creating stake meta collection...");
-    let stake_meta_collection = stake_meta::generate_stake_meta_collection(&bank)?;
-    write_to_json_file(&stake_meta_collection, &args.output_stake_meta_collection)?;
+            let call = || -> anyhow::Result<()> {
+                let validator_meta_collection =
+                    validator_meta::generate_validator_collection(&bank)?;
+                write_to_json_file(
+                    &validator_meta_collection,
+                    &args.output_validator_meta_collection,
+                )?;
+                info!("Validator meta collection finished.");
+                Ok(())
+            };
+
+            call()
+        })
+    };
+
+    let stake_meta_collection_handle = {
+        let bank = bank.clone();
+        spawn(move || {
+            info!("Creating stake meta collection...");
+
+            let call = || -> anyhow::Result<()> {
+                let stake_meta_collection = stake_meta::generate_stake_meta_collection(&bank)?;
+                write_to_json_file(&stake_meta_collection, &args.output_stake_meta_collection)?;
+                info!("Stake meta collection finished.");
+                Ok(())
+            };
+
+            call()
+        })
+    };
+
+    for handle in vec![
+        validator_meta_collection_handle,
+        stake_meta_collection_handle,
+    ] {
+        match handle.join() {
+            Ok(Ok(())) => info!("Thread completed successfully."),
+            Ok(Err(err)) => anyhow::bail!("Error in thread: {err:?}"),
+            Err(err) => anyhow::bail!("Thread panicked: {err:?}"),
+        }
+    }
 
     info!("Finished.");
     Ok(())
