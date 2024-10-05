@@ -4,7 +4,7 @@ use snapshot_parser::utils::write_to_json_file;
 use std::{fs, thread::spawn};
 use {
     clap::Parser,
-    log::{error, info},
+    log::info,
     snapshot_parser::{bank_loader::create_bank_from_ledger, stake_meta, validator_meta},
     std::path::PathBuf,
 };

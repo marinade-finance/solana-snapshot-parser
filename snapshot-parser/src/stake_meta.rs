@@ -2,13 +2,8 @@ use {
     crate::serde_serialize::{option_pubkey_string_conversion, pubkey_string_conversion},
     log::{error, info},
     serde::{Deserialize, Serialize},
-    solana_accounts_db::accounts_index::ScanConfig,
-    solana_program::pubkey::Pubkey,
-    solana_program::{
-        native_token::lamports_to_sol,
-        stake::state::StakeStateV2,
-        stake_history::{Epoch, StakeHistory, StakeHistoryEntry},
-    },
+    solana_accounts_db::accounts_index::{IndexKey, ScanConfig},
+    solana_program::{native_token::lamports_to_sol, pubkey::Pubkey, stake::state::StakeStateV2, stake_history::{Epoch, StakeHistory, StakeHistoryEntry}},
     solana_runtime::bank::Bank,
     solana_sdk::{
         account::{Account, AccountSharedData},

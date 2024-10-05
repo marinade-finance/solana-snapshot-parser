@@ -32,7 +32,6 @@ const VALIDATOR_COMMISSION_BPS_BYTE_OFFSET: usize = 8;
 
 pub fn fetch_jito_mev_metas(bank: &Arc<Bank>, epoch: Epoch) -> anyhow::Result<Vec<JitoMevMeta>> {
     let jito_program: Pubkey = JITO_PROGRAM.try_into()?;
-    bank.accounts().load_by_program(ancestors, bank_id, program_id, config)
     // let jito_accounts_raw = bank.get_program_accounts(
     //     &jito_program,
     //     &ScanConfig {
@@ -40,7 +39,7 @@ pub fn fetch_jito_mev_metas(bank: &Arc<Bank>, epoch: Epoch) -> anyhow::Result<Ve
     //         ..ScanConfig::default()
     //     },
     // )?;
-    let jito_account_raw = bank.get_filtered_indexed_accounts(&IndexKey::ProgramId(jito_program.clone()), |_| true, &ScanConfig {
+    let jito_accounts_raw = bank.get_filtered_indexed_accounts(&IndexKey::ProgramId(jito_program.clone()), |_| true, &ScanConfig {
         collect_all_unsorted: true,
         ..ScanConfig::default()
     }, None)?;
