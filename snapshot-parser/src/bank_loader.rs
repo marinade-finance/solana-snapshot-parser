@@ -2,7 +2,7 @@ use {
     log::info,
     solana_accounts_db::{
         accounts_db::AccountsDbConfig,
-        accounts_index::AccountsIndexConfig,
+        accounts_index::{AccountIndex, AccountSecondaryIndexes, AccountsIndexConfig},
         hardened_unpack::{open_genesis_config, MAX_GENESIS_ARCHIVE_UNPACKED_SIZE},
     },
     solana_ledger::{
@@ -17,6 +17,7 @@ use {
     },
     solana_sdk::clock::Slot,
     std::{
+        collections::HashSet,
         fs,
         path::{Path, PathBuf},
         sync::{atomic::AtomicBool, Arc},
@@ -55,6 +56,10 @@ pub fn create_bank_from_ledger(ledger_path: &Path) -> anyhow::Result<Arc<Bank>> 
         Some(&snapshot_config),
         &ProcessOptions {
             slot_callback: Some(Arc::new(|bank| info!("Slot callback: {}", bank.slot()))),
+            account_indexes: AccountSecondaryIndexes {
+                indexes: HashSet::from_iter(vec![AccountIndex::ProgramId]),
+                ..Default::default()
+            },
             accounts_db_config: Some(AccountsDbConfig {
                 index: Some(AccountsIndexConfig {
                     drives: Some(vec![drive_dir]),
