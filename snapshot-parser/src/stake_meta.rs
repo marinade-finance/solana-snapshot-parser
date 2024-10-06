@@ -2,8 +2,13 @@ use {
     crate::serde_serialize::{option_pubkey_string_conversion, pubkey_string_conversion},
     log::{error, info},
     serde::{Deserialize, Serialize},
-    solana_accounts_db::accounts_index::{IndexKey, ScanConfig},
-    solana_program::{native_token::lamports_to_sol, pubkey::Pubkey, stake::state::StakeStateV2, stake_history::{Epoch, StakeHistory, StakeHistoryEntry}},
+    solana_accounts_db::accounts_index::ScanConfig,
+    solana_program::{
+        native_token::lamports_to_sol,
+        pubkey::Pubkey,
+        stake::state::StakeStateV2,
+        stake_history::{Epoch, StakeHistory, StakeHistoryEntry},
+    },
     solana_runtime::bank::Bank,
     solana_sdk::{
         account::{Account, AccountSharedData},
@@ -63,18 +68,9 @@ pub fn generate_stake_meta_collection(bank: &Arc<Bank>) -> anyhow::Result<StakeM
     let history: StakeHistory = bincode::deserialize(&history_account.data)?;
     info!("Stake history loaded.");
 
-    // let stake_accounts_raw =
-    //     bank.get_program_accounts(&solana_program::stake::program::ID, &ScanConfig::default())?;
+    let stake_accounts_raw =
+        bank.get_program_accounts(&solana_program::stake::program::ID, &ScanConfig::default())?;
 
-    let stake_accounts_raw = bank.get_filtered_indexed_accounts(
-        &IndexKey::ProgramId(solana_program::stake::program::ID.clone()),
-        |_| true,
-        &ScanConfig {
-            collect_all_unsorted: true,
-            ..ScanConfig::default()
-        },
-        None,
-    )?;
     info!("Stake accounts loaded: {}", stake_accounts_raw.len());
 
     let mut stake_metas: Vec<StakeMeta> = Default::default();

@@ -1,4 +1,4 @@
-use solana_accounts_db::accounts_index::{IndexKey, ScanConfig};
+use solana_accounts_db::accounts_index::ScanConfig;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::{Account, AccountSharedData};
 
@@ -32,17 +32,13 @@ const VALIDATOR_COMMISSION_BPS_BYTE_OFFSET: usize = 8;
 
 pub fn fetch_jito_mev_metas(bank: &Arc<Bank>, epoch: Epoch) -> anyhow::Result<Vec<JitoMevMeta>> {
     let jito_program: Pubkey = JITO_PROGRAM.try_into()?;
-    // let jito_accounts_raw = bank.get_program_accounts(
-    //     &jito_program,
-    //     &ScanConfig {
-    //         collect_all_unsorted: true,
-    //         ..ScanConfig::default()
-    //     },
-    // )?;
-    let jito_accounts_raw = bank.get_filtered_indexed_accounts(&IndexKey::ProgramId(jito_program.clone()), |_| true, &ScanConfig {
-        collect_all_unsorted: true,
-        ..ScanConfig::default()
-    }, None)?;
+    let jito_accounts_raw = bank.get_program_accounts(
+        &jito_program,
+        &ScanConfig {
+            collect_all_unsorted: true,
+            ..ScanConfig::default()
+        },
+    )?;
     info!(
         "jito program {} `raw` accounts loaded: {}",
         JITO_PROGRAM,
