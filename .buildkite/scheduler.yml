@@ -28,7 +28,7 @@ steps:
       echo max_available_epoch: $$max_available_epoch
       (( $$max_processed_epoch < $$max_available_epoch )) && cat <<EOF | buildkite-agent pipeline upload
       steps:
-        - trigger: "snapshot-fetch-and-parse"
+        - trigger: "solana-snapshot-parser"
           label: ":rocket: Trigger: Fetch Solana snapshot ($$max_available_epoch)"
           async: false
           build:
