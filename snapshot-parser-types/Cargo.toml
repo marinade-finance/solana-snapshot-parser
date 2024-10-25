@@ -6,4 +6,5 @@ edition = "2021"
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-solana-program = { workspace = true }
+# this needs to be compatible with validator-bonds' version of the dependency
+solana-program = "^1.17.22"

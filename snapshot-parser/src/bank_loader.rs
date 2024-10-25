@@ -51,7 +51,7 @@ pub fn create_bank_from_ledger(ledger_path: &Path) -> anyhow::Result<Arc<Bank>> 
     let (bank_forks, ..) = bank_forks_utils::load_bank_forks(
         &genesis_config,
         &blockstore,
-        vec![PathBuf::from(ledger_path).join(Path::new("stake-meta.accounts"))],
+        vec![PathBuf::from(ledger_path).join(Path::new("stake-meta.processors"))],
         Some(&snapshot_config),
         &ProcessOptions {
             slot_callback: Some(Arc::new(|bank| info!("Slot callback: {}", bank.slot()))),

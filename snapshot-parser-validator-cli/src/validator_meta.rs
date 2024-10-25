@@ -1,7 +1,8 @@
 use {
-    crate::{jito_mev::fetch_jito_mev_metas, serde_serialize::pubkey_string_conversion},
+    crate::jito_mev::fetch_jito_mev_metas,
     log::{error, info, warn},
     serde::{Deserialize, Serialize},
+    snapshot_parser::serde_serialize::pubkey_string_conversion,
     solana_program::pubkey::Pubkey,
     solana_program::stake_history::Epoch,
     solana_runtime::bank::Bank,
@@ -157,7 +158,7 @@ pub fn generate_validator_collection(bank: &Arc<Bank>) -> anyhow::Result<Validat
         validator_metas.len()
     );
     info!(
-        "Vote accounts with some credits earned: {}",
+        "Vote processors with some credits earned: {}",
         validator_metas.iter().filter(|v| v.credits > 0).count()
     );
 
