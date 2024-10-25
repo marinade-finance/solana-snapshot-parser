@@ -1,5 +1,5 @@
 use {
-    crate::serde_serialize::{option_pubkey_string_conversion, pubkey_string_conversion},
+    crate::serde_serialize_solana_17::{option_pubkey_string_conversion, pubkey_string_conversion},
     serde::{Deserialize, Serialize},
     solana_program::{clock::Epoch, pubkey::Pubkey},
 };

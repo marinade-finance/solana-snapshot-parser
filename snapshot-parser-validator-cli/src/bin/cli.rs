@@ -1,19 +1,19 @@
 use env_logger::{Builder, Env};
 use log::LevelFilter;
+use snapshot_parser::stake_meta;
 use snapshot_parser::utils::write_to_json_file;
-use std::{fs, thread::spawn};
+use snapshot_parser_validator_cli::validator_meta;
+use std::thread::spawn;
 use {
-    clap::Parser,
-    log::info,
-    snapshot_parser::{bank_loader::create_bank_from_ledger, stake_meta, validator_meta},
-    std::path::PathBuf,
+    clap::Parser, log::info, snapshot_parser::bank_loader::create_bank_from_ledger,
+    snapshot_parser::cli::path_parser, std::path::PathBuf,
 };
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Path to the directory where the snapshot is unpacked (e.g., from .tar.zst)
-    #[arg(long, env, value_parser = Args::path_parser)]
+    #[arg(long, env, value_parser = path_parser)]
     ledger_path: PathBuf,
 
     /// Path to write JSON file to for the validator metas (e.g., validators.json)
@@ -23,14 +23,6 @@ struct Args {
     /// Path to write JSON file to for the stake metas (e.g., stakes.json)
     #[arg(long, env)]
     output_stake_meta_collection: String,
-}
-
-impl Args {
-    fn path_parser(path: &str) -> Result<PathBuf, &'static str> {
-        Ok(fs::canonicalize(path).unwrap_or_else(|err| {
-            panic!("Unable to access path '{}': {}", path, err);
-        }))
-    }
 }
 
 fn main() -> anyhow::Result<()> {
