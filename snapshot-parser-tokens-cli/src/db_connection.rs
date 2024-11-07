@@ -38,7 +38,8 @@ impl SQLiteExecutor {
         let _ = std::fs::remove_file(&db_temp_path);
         let db_temp_guard = TempFileGuard::new(db_temp_path.clone());
         // Create and configure the DB as file-backed
-        let db = Self::connect_db(&db_temp_path, cache_size, mmap_size)?;
+        let db = Self::connect_db(&db_temp_path, cache_size, mmap_size)
+            .map_err(|e| SQLiteExecutor::convert_sqlite_error("new", e))?;
 
         Ok(Self {
             db,
@@ -56,27 +57,34 @@ impl SQLiteExecutor {
     pub async fn execute<P: Params>(&mut self, sql: &str, params: P) -> anyhow::Result<usize> {
         if self.tx_bulk.is_some() && self.transaction_batch_counter == 0 {
             // we explicitly start transaction bulk here, otherwise every insert will be a separate transaction that fsync to disk
-            self.db.execute_batch("BEGIN;")?;
+            self.db
+                .execute_batch("BEGIN;")
+                .map_err(|e| SQLiteExecutor::convert_sqlite_error("execute", e))?;
             // it should not start a new transaction when multiple `begin_transaction` called in row
             self.transaction_batch_counter = 1;
         }
 
         // Fast operation due to SQLite's internal cache
-        let mut stmt = self.db.prepare(sql)?;
+        let mut stmt = self
+            .db
+            .prepare(sql)
+            .map_err(|e| SQLiteExecutor::convert_sqlite_error("execute:prepare", e))?;
 
         self.transaction_batch_counter = self.transaction_batch_counter.saturating_add(1);
-        let result = stmt.execute(params).map_err(Into::into);
+        let result = stmt
+            .execute(params)
+            .map_err(|e| SQLiteExecutor::convert_sqlite_error("execute:statement", e))?;
         self.db_execute_counter.inc();
+        drop(stmt);
 
         if let Some(bulk_size) = self.tx_bulk {
             if self.transaction_batch_counter % bulk_size == 0
                 || self.transaction_batch_counter == u16::MAX
             {
-                self.db.execute_batch("COMMIT;")?;
-                self.transaction_batch_counter = 0;
+                self.commit_db("execute");
             }
         }
-        result
+        Ok(result)
     }
 
     /// Usable for special cases when quiting transaction is required.
@@ -88,28 +96,23 @@ impl SQLiteExecutor {
     ) -> anyhow::Result<usize> {
         // closing any open transaction
         if self.tx_bulk.is_some() && self.transaction_batch_counter > 0 {
-            self.db.execute_batch("COMMIT;")?;
+            self.commit_db("execute_special");
         }
 
         debug!("Executing special out-of-transaction SQL: {}", sql);
-        let result = self.db.execute(sql, params).map_err(Into::into);
+        let result = self
+            .db
+            .execute(sql, params)
+            .map_err(|e| SQLiteExecutor::convert_sqlite_error("execute_special:execute", e))?;
 
-        // let's start a new transaction when we committed the previous one
-        if let Some(bulk_size) = self.tx_bulk {
-            if self.transaction_batch_counter % bulk_size == 0 {
-                self.db.execute_batch("BEGIN;")?;
-                self.transaction_batch_counter = 1;
-            }
-        }
-
-        result
+        Ok(result)
     }
 
     fn connect_db(
         path: &Path,
         cache_size_mb: Option<i64>,
         mmap_size_mb: Option<u16>,
-    ) -> anyhow::Result<Connection> {
+    ) -> rusqlite::Result<Connection> {
         let db = Connection::open(&path)?;
         db.pragma_update(None, "synchronous", false)?;
         db.pragma_update(None, "journal_mode", "off")?;
@@ -167,7 +170,7 @@ impl SQLiteExecutor {
     pub async fn finalize(&mut self) -> anyhow::Result<()> {
         // first, commit transactions if there is some started
         if self.tx_bulk.is_some() && self.transaction_batch_counter > 0 {
-            self.db.execute_batch("COMMIT;")?;
+            self.commit_db("finalize");
         }
 
         // second, promote the DB file as finished
@@ -178,5 +181,21 @@ impl SQLiteExecutor {
             &self.db_path
         );
         Ok(())
+    }
+
+    fn commit_db(&mut self, method_name: &str) {
+        self.db
+            .execute_batch("COMMIT;")
+            .map_err(|e| {
+                SQLiteExecutor::convert_sqlite_error(format!("{}:commit", method_name).as_str(), e)
+            })
+            .unwrap();
+        self.transaction_batch_counter = 0;
+    }
+
+    fn convert_sqlite_error(method: &str, err: rusqlite::Error) -> anyhow::Error {
+        let msg = format!("SQLite error at {}: {}", method, err);
+        error!("Sqlite error: {}", msg);
+        anyhow::Error::msg(msg)
     }
 }
