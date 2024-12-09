@@ -1,7 +1,6 @@
 use solana_accounts_db::accounts_index::ScanConfig;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::{Account, AccountSharedData};
-
 use {log::info, solana_program::stake_history::Epoch, solana_runtime::bank::Bank, std::sync::Arc};
 
 pub struct JitoMevMeta {
@@ -40,7 +39,7 @@ pub fn fetch_jito_mev_metas(bank: &Arc<Bank>, epoch: Epoch) -> anyhow::Result<Ve
         },
     )?;
     info!(
-        "jito program {} `raw` accounts loaded: {}",
+        "jito program {} `raw` processors loaded: {}",
         JITO_PROGRAM,
         jito_accounts_raw.len()
     );
@@ -61,7 +60,7 @@ pub fn fetch_jito_mev_metas(bank: &Arc<Bank>, epoch: Epoch) -> anyhow::Result<Ve
     }
 
     info!(
-        "jito tip distribution accounts for epoch {}: {}",
+        "jito tip distribution processors for epoch {}: {}",
         epoch,
         jito_mev_metas.len()
     );
