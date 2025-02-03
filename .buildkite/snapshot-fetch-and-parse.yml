@@ -98,7 +98,7 @@ steps:
     commands:
     - 'snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)'
     - 'echo "Cleaning snapshot dir: $$snapshot_dir"'
-    - 'rm -r "$$snapshot_dir"'
+    - 'rm -rf --preserve-root "$$snapshot_dir"'
 
   - wait: ~
 
