@@ -32,6 +32,7 @@ steps:
           label: ":rocket: Trigger: Fetch Solana snapshot ($$max_available_epoch)"
           async: false
           build:
+            branch: $$BUILDKITE_BRANCH
             env:
               EPOCH: $$max_available_epoch
       EOF
