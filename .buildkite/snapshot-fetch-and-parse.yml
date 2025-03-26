@@ -41,7 +41,7 @@ steps:
     - 'mkdir -p /mnt/storage-1/snapshots'
     - 'epoch=${EPOCH:-$(buildkite-agent meta-data get epoch)}'
     - 'snapshot_dir=$(mktemp --directory -p "$$target_dir" "snapshot-$$epoch-$(date +%s)-XXXXXX")'
-    - 'buildkite-agent meta-data set snapshot_dir "$$snapshot_dir"'
+    - 'buildkite-agent meta-data set --redacted-vars "" snapshot_dir "$$snapshot_dir"'
 
   - wait: ~
 
