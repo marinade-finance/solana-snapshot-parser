@@ -1,6 +1,6 @@
 use {
     crate::jito_mev::fetch_jito_mev_metas,
-    log::{error, info, warn},
+    log::{info, warn},
     serde::{Deserialize, Serialize},
     snapshot_parser::serde_serialize::pubkey_string_conversion,
     solana_program::pubkey::Pubkey,
