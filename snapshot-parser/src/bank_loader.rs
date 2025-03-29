@@ -41,6 +41,7 @@ pub fn create_bank_from_ledger(ledger_path: &Path) -> anyhow::Result<Arc<Bank>> 
             recovery_mode: None,
             enforce_ulimit_nofile: false,
             column_options: LedgerColumnOptions::default(),
+            ..BlockstoreOptions::default()
         },
     )?;
     info!("Blockstore loaded.");
