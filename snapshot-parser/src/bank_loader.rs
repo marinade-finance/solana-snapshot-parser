@@ -24,7 +24,7 @@ use {
 };
 
 pub fn create_bank_from_ledger(ledger_path: &Path) -> anyhow::Result<Arc<Bank>> {
-    let genesis_config = open_genesis_config(ledger_path, MAX_GENESIS_ARCHIVE_UNPACKED_SIZE)?;
+    let genesis_config = open_genesis_config(ledger_path, MAX_GENESIS_ARCHIVE_UNPACKED_SIZE);
     let snapshot_config = SnapshotConfig {
         usage: SnapshotUsage::LoadOnly,
         full_snapshot_archive_interval_slots: Slot::MAX,
@@ -34,6 +34,7 @@ pub fn create_bank_from_ledger(ledger_path: &Path) -> anyhow::Result<Arc<Bank>> 
         bank_snapshots_dir: PathBuf::from(ledger_path),
         ..SnapshotConfig::default()
     };
+
     let blockstore = Blockstore::open_with_options(
         ledger_path,
         BlockstoreOptions {
@@ -47,18 +48,13 @@ pub fn create_bank_from_ledger(ledger_path: &Path) -> anyhow::Result<Arc<Bank>> 
 
     let drive_dir = PathBuf::from(ledger_path).join("drive1");
     fs::create_dir_all(&drive_dir).unwrap();
-
-    let (bank_forks, ..) = bank_forks_utils::load_bank_forks(
+    let (bank_forks, _, _) = bank_forks_utils::load_bank_forks(
         &genesis_config,
         &blockstore,
-        vec![PathBuf::from(ledger_path).join(Path::new("stake-meta.processors"))],
+        vec![PathBuf::from(ledger_path).join(Path::new("stake-meta.accounts"))],
+        None,
         Some(&snapshot_config),
         &ProcessOptions {
-            slot_callback: Some(Arc::new(|bank| info!("Slot callback: {}", bank.slot()))),
-            // account_indexes: AccountSecondaryIndexes {
-            //     indexes: HashSet::from_iter(vec![AccountIndex::ProgramId]),
-            //     ..Default::default()
-            // },
             accounts_db_config: Some(AccountsDbConfig {
                 index: Some(AccountsIndexConfig {
                     drives: Some(vec![drive_dir]),
@@ -73,7 +69,7 @@ pub fn create_bank_from_ledger(ledger_path: &Path) -> anyhow::Result<Arc<Bank>> 
         None,
         None,
         Arc::new(AtomicBool::new(false)),
-    )?;
+    );
     info!("Bank forks loaded.");
 
     let working_bank = bank_forks.read().unwrap().working_bank();
