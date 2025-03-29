@@ -67,6 +67,9 @@ steps:
   - wait: ~
 
   - label: ":microscope: Parse Snapshot"
+    env:
+      RUST_BACKTRACE: full
+      RUST_LOG: trace
     commands:
     - 'snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)'
     - 'buildkite-agent artifact download --include-retried-jobs target/release/snapshot-parser-validator-cli .'
