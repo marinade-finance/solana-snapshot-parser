@@ -38,6 +38,7 @@ steps:
     env:
       target_dir: /mnt/storage-1/snapshots
     commands:
+    - 'ulimit -a'
     - 'mkdir -p /mnt/storage-1/snapshots'
     - 'epoch=${EPOCH:-$(buildkite-agent meta-data get epoch)}'
     - 'snapshot_dir=$(mktemp --directory -p "$$target_dir" "snapshot-$$epoch-$(date +%s)-XXXXXX")'
@@ -66,6 +67,9 @@ steps:
   - wait: ~
 
   - label: ":microscope: Parse Snapshot"
+    env:
+      RUST_BACKTRACE: full
+      # RUST_LOG: trace
     commands:
     - 'snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)'
     - 'buildkite-agent artifact download --include-retried-jobs target/release/snapshot-parser-validator-cli .'

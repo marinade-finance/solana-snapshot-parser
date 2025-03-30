@@ -1,6 +1,6 @@
 use {
     crate::jito_mev::fetch_jito_mev_metas,
-    log::{error, info, warn},
+    log::{info, warn},
     serde::{Deserialize, Serialize},
     snapshot_parser::serde_serialize::pubkey_string_conversion,
     solana_program::pubkey::Pubkey,
@@ -82,14 +82,13 @@ fn fetch_vote_account_metas(bank: &Arc<Bank>, epoch: Epoch) -> Vec<VoteAccountMe
     bank.vote_accounts()
         .iter()
         .filter_map(
-            |(pubkey, (stake, vote_account))| match vote_account.vote_state() {
-                Ok(vote_state) => {
-                    let credits = vote_state
+            |(pubkey, (stake, vote_account))| {
+                    let credits = vote_account.vote_state()
                         .epoch_credits
                         .iter()
                         .find_map(|(credits_epoch, _, prev_credits)| {
                             if *credits_epoch == epoch {
-                                Some(vote_state.credits() - *prev_credits)
+                                Some(vote_account.vote_state().credits() - *prev_credits)
                             } else {
                                 None
                             }
@@ -98,15 +97,11 @@ fn fetch_vote_account_metas(bank: &Arc<Bank>, epoch: Epoch) -> Vec<VoteAccountMe
 
                     Some(VoteAccountMeta {
                         vote_account: *pubkey,
-                        commission: vote_state.commission,
+                        commission: vote_account.vote_state().commission,
                         stake: *stake,
                         credits,
                     })
-                }
-                Err(err) => {
-                    error!("Failed to get the vote state for: {}: {}", pubkey, err);
-                    None
-                }
+
             },
         )
         .collect()

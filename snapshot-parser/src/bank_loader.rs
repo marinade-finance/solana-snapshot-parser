@@ -1,3 +1,4 @@
+use solana_ledger::blockstore::{default_num_compaction_threads, default_num_flush_threads};
 use {
     log::info,
     solana_accounts_db::{
@@ -41,6 +42,8 @@ pub fn create_bank_from_ledger(ledger_path: &Path) -> anyhow::Result<Arc<Bank>> 
             recovery_mode: None,
             enforce_ulimit_nofile: false,
             column_options: LedgerColumnOptions::default(),
+            num_rocksdb_compaction_threads: default_num_compaction_threads(),
+            num_rocksdb_flush_threads: default_num_flush_threads(),
         },
     )?;
     info!("Blockstore loaded.");
