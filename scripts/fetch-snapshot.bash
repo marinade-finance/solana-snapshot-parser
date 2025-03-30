@@ -20,9 +20,10 @@ fi
 target_dir_absolute="$(realpath $target_dir)"
 echo "Target path: $target_dir_absolute" >&2
 
+marinade_gs_bucket="gs://marinade-solana-snapshot-mainnet"
 jito_gs_bucket="gs://jito-mainnet"
 
-gs_files=$(gcloud storage ls "$jito_gs_bucket/$epoch/**/*.tar.zst" || exit 1)
+gs_files=$(gcloud storage ls "$jito_gs_bucket/$epoch/**/*.tar.zst" "$marinade_gs_bucket/$epoch/**/*.tar.zst" || exit 1)
 echo "Available objects:" >&2
 echo "$gs_files" >&2
 
@@ -36,6 +37,6 @@ fi
 
 echo "Snapshot path: $gs_path_snapshot" >&2
 
-gcloud storage cp "$gs_path_snapshot" "$target_dir_absolute"
+# gcloud storage cp "$gs_path_snapshot" "$target_dir_absolute"
 
-pv -F "Written: %b Elapsed: %t ETA: %e Speed: %a" -f -i 10 "$target_dir_absolute"/snapshot-*.tar.zst | tar --use-compress-program=unzstd -xf - -C "$target_dir_absolute"
+# pv -F "Written: %b Elapsed: %t ETA: %e Speed: %a" -f -i 10 "$target_dir_absolute"/snapshot-*.tar.zst | tar --use-compress-program=unzstd -xf - -C "$target_dir_absolute"

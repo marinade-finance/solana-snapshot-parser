@@ -54,7 +54,7 @@ steps:
     commands:
     - 'snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)'
     - 'epoch=$(buildkite-agent meta-data get epoch)'
-    - './scripts/fetch-jito-snapshot.bash "$$epoch" "$$snapshot_dir"'
+    - './scripts/fetch-snapshot.bash "$$epoch" "$$snapshot_dir"'
 
   - label: ":hammer_and_wrench: :rust: Build"
     commands:
