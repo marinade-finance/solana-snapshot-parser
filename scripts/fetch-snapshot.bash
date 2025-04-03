@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -e
+set -o pipefail
 
 epoch="$1"
 target_dir="$2"
@@ -23,7 +24,7 @@ echo "Target path: $target_dir_absolute" >&2
 marinade_gs_bucket="gs://marinade-solana-snapshot-mainnet"
 jito_gs_bucket="gs://jito-mainnet"
 
-gs_files=$(gcloud storage ls "$marinade_gs_bucket/$epoch/**/*.tar.zst" || gcloud storage ls "$jito_gs_bucket/$epoch/**/*.tar.zst" || exit 1)
+gs_files=$(gcloud storage ls "$marinade_gs_bucket/$epoch/**/*.tar.zst" || gcloud storage ls "$jito_gs_bucket/$epoch/**/*.tar.zst")
 echo "Available objects:" >&2
 echo "$gs_files" >&2
 
