@@ -4,7 +4,7 @@ Parses Solana snapshot data and generates `json` files for further pipeline proc
 
 The following CLI packages are used:
 
-- **solana-parser-validator-cli**: Used within [.buildkite](./buildkite/snapshot-fetch-and-parse.yml). 
+- **solana-parser-validator-cli**: Used within [.buildkite](./.buildkite/snapshot-fetch-and-parse.yml). 
   Parses the last slot snapshot of each epoch, generating information about validators and stakes.
 - **solana-parser-tokens-cli**: Used within [Solana Snapshot Manager](https://github.com/marinade-finance/solana-snapshot-manager) to retrieve mSOL data,
   typically running once per day.
