@@ -1,11 +1,14 @@
 [workspace]
 members = [
     "snapshot-parser",
-    "snapshot-parser-types",
     "snapshot-parser-validator-cli",
     "snapshot-parser-tokens-cli",
 ]
 resolver = "1"
+exclude = [
+    "snapshot-parser-types"
+]
+
 
 [profile.release]
 codegen-units = 1
@@ -18,7 +21,7 @@ incremental = false
 opt-level = 3
 
 [workspace.dependencies]
-anchor-lang = "0.30.1"
+anchor-lang = "0.31.0"
 anyhow = "1.0.82"
 async-trait = "0.1.83"
 base64 = "0.22.1"
@@ -28,20 +31,16 @@ clap = { version = "4.1.11", features = ["derive", "env"] }
 env_logger = "0.11.5"
 indicatif = { version = "0.17.8"}
 log = "0.4.14"
-mpl-token-metadata = "4.1.2"
-spl-token = { version = "6.0.0" }
+mpl-token-metadata = "5.1.0"
+spl-token = { version = "8.0.0" }
 rusqlite = { version = "0.32.1", features = ["bundled"] }
 serde = "1.0.197"
 serde_json = "1.0.114"
-serde_yaml = "0.8"
 shellexpand = "3.1.0"
 snapshot-parser = { path = "./snapshot-parser" }
-snapshot-parser-types = { path = "./snapshot-parser-types" }
-solana-cost-model = "=2.0.14"
-solana-client = "=2.0.14"
-solana-ledger = "=2.0.14"
-solana-program = "=2.0.14"
-solana-runtime = "=2.0.14"
-solana-sdk = "=2.0.14"
-solana-accounts-db = "=2.0.14"
+solana-ledger = "=2.2.6"
+solana-program = "=2.2.1"
+solana-runtime = "=2.2.6"
+solana-sdk = "=2.2.2"
+solana-accounts-db = "=2.2.6"
 tokio = { version = "1", features = ["full"] }
