@@ -1,3 +1,6 @@
+use crate::utils::jito_parser::{
+    get_epoch_created_at, read_jito_commission_and_epoch, JitoCommissionMeta,
+};
 use solana_accounts_db::accounts_index::ScanConfig;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::{Account, AccountSharedData};
@@ -13,21 +16,6 @@ pub struct JitoMevMeta {
 // https://github.com/jito-foundation/jito-programs/blob/v0.1.5/mev-programs/programs/tip-distribution/src/lib.rs#L385
 const JITO_PROGRAM: &str = "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7";
 const TIP_DISTRIBUTION_ACCOUNT_DISCRIMINATOR: [u8; 8] = [85, 64, 113, 198, 234, 94, 120, 123];
-const VALIDATOR_VOTE_ACCOUNT_BYTE_INDEX: usize = 8; // anchor header
-const MERKLE_ROOT_OPTION_BYTE_INDEX: usize = 8 + // anchor header
-    // TipDistributionAccount "prefix" data
-    64;
-// epoch at byte index 73
-const EPOCH_CREATED_AT_NO_MERKLE_ROOT_BYTE_INDEX: usize =
-    // TipDistributionAccount "prefix" + 1 byte for Option<MerkleRoot> when None
-    MERKLE_ROOT_OPTION_BYTE_INDEX + 1;
-// epoch at byte index 137 (0x89)
-const EPOCH_CREATED_AT_WITH_MERKLE_ROOT_BYTE_INDEX: usize =
-    // TipDistributionAccount "prefix" + 1 byte for Option
-    EPOCH_CREATED_AT_NO_MERKLE_ROOT_BYTE_INDEX +
-    // MerkleRoot
-    64;
-const VALIDATOR_COMMISSION_BPS_BYTE_OFFSET: usize = 8;
 
 pub fn fetch_jito_mev_metas(bank: &Arc<Bank>, epoch: Epoch) -> anyhow::Result<Vec<JitoMevMeta>> {
     let jito_program: Pubkey = JITO_PROGRAM.try_into()?;
@@ -39,7 +27,7 @@ pub fn fetch_jito_mev_metas(bank: &Arc<Bank>, epoch: Epoch) -> anyhow::Result<Ve
         },
     )?;
     info!(
-        "jito program {} `raw` processors loaded: {}",
+        "jito mev distribution program {} `raw` processors loaded: {}",
         JITO_PROGRAM,
         jito_accounts_raw.len()
     );
@@ -80,34 +68,6 @@ fn update_jito_mev_metas(
     Ok(())
 }
 
-/// Returns the epoch and the byte index where the epoch was found at.
-fn get_epoch_created_at(account: &Account) -> anyhow::Result<(u64, usize)> {
-    // epoch_created_at_*_byte_index -1 contains info about Option is None (0) or Some (1)
-    if u8::from_le_bytes([account.data[MERKLE_ROOT_OPTION_BYTE_INDEX]]) == 0 {
-        Ok((
-            u64::from_le_bytes(
-                account.data[EPOCH_CREATED_AT_NO_MERKLE_ROOT_BYTE_INDEX
-                    ..EPOCH_CREATED_AT_NO_MERKLE_ROOT_BYTE_INDEX + 8]
-                    .try_into()?,
-            ),
-            EPOCH_CREATED_AT_NO_MERKLE_ROOT_BYTE_INDEX,
-        ))
-    } else {
-        assert_eq!(
-            u8::from_le_bytes([account.data[MERKLE_ROOT_OPTION_BYTE_INDEX]]),
-            1
-        );
-        Ok((
-            u64::from_le_bytes(
-                account.data[EPOCH_CREATED_AT_WITH_MERKLE_ROOT_BYTE_INDEX
-                    ..EPOCH_CREATED_AT_WITH_MERKLE_ROOT_BYTE_INDEX + 8]
-                    .try_into()?,
-            ),
-            EPOCH_CREATED_AT_WITH_MERKLE_ROOT_BYTE_INDEX,
-        ))
-    }
-}
-
 fn update_mev_commission(
     jito_mev_metas: &mut Vec<JitoMevMeta>,
     account: &Account,
@@ -115,56 +75,15 @@ fn update_mev_commission(
     epoch_byte_index: usize,
     epoch: Epoch,
 ) -> anyhow::Result<()> {
-    let (vote_account, jito_commission, epoch_parsed) =
-        read_jito_mev_commission(account_pubkey, account, epoch_byte_index)?;
-    assert_eq!(epoch, epoch_parsed);
+    let JitoCommissionMeta {
+        epoch_created_at,
+        validator_commission_bps: jito_commission,
+        validator_vote_account: vote_account,
+    } = read_jito_commission_and_epoch(account_pubkey, account, epoch_byte_index)?;
+    assert_eq!(epoch, epoch_created_at);
     jito_mev_metas.push(JitoMevMeta {
         vote_account,
         mev_commission: jito_commission,
     });
     Ok(())
-}
-
-fn read_jito_mev_commission(
-    account_pubkey: Pubkey,
-    account: &Account,
-    epoch_byte_index: usize,
-) -> anyhow::Result<(Pubkey, u16, u64)> {
-    let vote_account: Pubkey = account.data
-        [VALIDATOR_VOTE_ACCOUNT_BYTE_INDEX..VALIDATOR_VOTE_ACCOUNT_BYTE_INDEX + 32]
-        .try_into()
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to parse on-chain account {}: {:?}",
-                account_pubkey,
-                e
-            )
-        })?;
-
-    let epoch: u64 = u64::from_le_bytes(
-        account.data[epoch_byte_index..epoch_byte_index + 8]
-            .try_into()
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to parse epoch for account {}: {:?}",
-                    account_pubkey,
-                    e
-                )
-            })?,
-    );
-
-    let validator_commission_bps_byte_index =
-        epoch_byte_index + VALIDATOR_COMMISSION_BPS_BYTE_OFFSET;
-    let mev_commission = u16::from_le_bytes(
-        account.data[validator_commission_bps_byte_index..validator_commission_bps_byte_index + 2]
-            .try_into()
-            .map_err(|e| {
-                anyhow::anyhow!(
-                "Failed to parse validator_commission_bps (mev commission) for account {}: {:?}",
-                account_pubkey,
-                e)
-            })?,
-    );
-
-    Ok((vote_account, mev_commission, epoch))
 }

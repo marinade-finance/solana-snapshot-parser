@@ -1,6 +1,8 @@
+use crate::jito_priority_fee::fetch_jito_priority_fee_metas;
+use log::debug;
 use {
     crate::jito_mev::fetch_jito_mev_metas,
-    log::{info, warn},
+    log::info,
     serde::{Deserialize, Serialize},
     snapshot_parser::serde_serialize::pubkey_string_conversion,
     solana_program::pubkey::Pubkey,
@@ -17,6 +19,10 @@ pub struct ValidatorMeta {
     pub commission: u8,
     /// jito-tip-distribution // TipDistributionAccount // validator_commission_bps
     pub mev_commission: Option<u16>,
+    /// priority-fee-distribution // PriorityFeeDistributionAccount // validator_commission_bps
+    pub jito_priority_fee_commission: Option<u16>,
+    /// priority-fee-distribution // PriorityFeeDistributionAccount // total_lamports_transferred
+    pub jito_priority_fee_lamports: u64,
     pub stake: u64,
     pub credits: u64,
 }
@@ -81,29 +87,27 @@ struct VoteAccountMeta {
 fn fetch_vote_account_metas(bank: &Arc<Bank>, epoch: Epoch) -> Vec<VoteAccountMeta> {
     bank.vote_accounts()
         .iter()
-        .filter_map(
-            |(pubkey, (stake, vote_account))| {
-                    let credits = vote_account.vote_state()
-                        .epoch_credits
-                        .iter()
-                        .find_map(|(credits_epoch, _, prev_credits)| {
-                            if *credits_epoch == epoch {
-                                Some(vote_account.vote_state().credits() - *prev_credits)
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or(0);
+        .filter_map(|(pubkey, (stake, vote_account))| {
+            let credits = vote_account
+                .vote_state()
+                .epoch_credits
+                .iter()
+                .find_map(|(credits_epoch, _, prev_credits)| {
+                    if *credits_epoch == epoch {
+                        Some(vote_account.vote_state().credits() - *prev_credits)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0);
 
-                    Some(VoteAccountMeta {
-                        vote_account: *pubkey,
-                        commission: vote_account.vote_state().commission,
-                        stake: *stake,
-                        credits,
-                    })
-
-            },
-        )
+            Some(VoteAccountMeta {
+                vote_account: *pubkey,
+                commission: vote_account.vote_state().commission,
+                stake: *stake,
+                credits,
+            })
+        })
         .collect()
 }
 
@@ -126,25 +130,50 @@ pub fn generate_validator_collection(bank: &Arc<Bank>) -> anyhow::Result<Validat
 
     let vote_account_metas = fetch_vote_account_metas(bank, epoch);
     let jito_mev_metas = fetch_jito_mev_metas(bank, epoch)?;
+    let jito_priority_fee_metas = fetch_jito_priority_fee_metas(bank, epoch)?;
 
     let mut validator_metas = vote_account_metas
         .into_iter()
-        .map(|vote_account_meta| ValidatorMeta {
-            vote_account: vote_account_meta.vote_account,
-            commission: vote_account_meta.commission,
-            mev_commission: jito_mev_metas
+        .map(|vote_account_meta| {
+            let priority_fee = jito_priority_fee_metas
                 .iter()
-                .find(|jito_mev_meta| jito_mev_meta.vote_account == vote_account_meta.vote_account)
-                .map(|jito_mev_meta| Some(jito_mev_meta.mev_commission))
+                .find(|jito_priority_fee_meta| {
+                    jito_priority_fee_meta.validator_vote_account == vote_account_meta.vote_account
+                })
+                .map(|jito_priority_fee_meta| {
+                    (
+                        Some(jito_priority_fee_meta.validator_commission_bps),
+                        jito_priority_fee_meta.total_lamports_transferred,
+                    )
+                })
                 .unwrap_or_else(|| {
-                    warn!(
-                        "No Jito MEV commission found for vote account: {}",
+                    debug!(
+                        "No Jito Priority Fee commission found for vote account: {}",
                         vote_account_meta.vote_account
                     );
-                    None
-                }),
-            stake: vote_account_meta.stake,
-            credits: vote_account_meta.credits,
+                    (None, 0)
+                });
+            ValidatorMeta {
+                vote_account: vote_account_meta.vote_account,
+                commission: vote_account_meta.commission,
+                mev_commission: jito_mev_metas
+                    .iter()
+                    .find(|jito_mev_meta| {
+                        jito_mev_meta.vote_account == vote_account_meta.vote_account
+                    })
+                    .map(|jito_mev_meta| Some(jito_mev_meta.mev_commission))
+                    .unwrap_or_else(|| {
+                        debug!(
+                            "No Jito MEV commission found for vote account: {}",
+                            vote_account_meta.vote_account
+                        );
+                        None
+                    }),
+                jito_priority_fee_commission: priority_fee.0,
+                jito_priority_fee_lamports: priority_fee.1,
+                stake: vote_account_meta.stake,
+                credits: vote_account_meta.credits,
+            }
         })
         .collect::<Vec<_>>();
 
