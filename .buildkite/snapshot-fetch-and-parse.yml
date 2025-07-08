@@ -3,6 +3,8 @@ agents:
 
 env:
   gs_bucket: gs://marinade-solana-snapshot-mainnet
+  slack_api: https://slack.com/api/chat.postMessage
+  slack_feed: "feed-snapshot"
 
 steps:
   - label: ":closed_lock_with_key: Concurrency gate lock"
@@ -24,43 +26,48 @@ steps:
     - |
       epoch=${EPOCH:-$(buildkite-agent meta-data get epoch)}
       buildkite-agent meta-data set --redacted-vars="" epoch "$$epoch"
-      curl "$$DISCORD_WEBHOOK_VALIDATOR_BONDS" -H "Content-Type: application/json" -d '{
-        "embeds": [
-          {
-            "title": "Parsing Solana snapshot ('"$$epoch"').",
-            "url": "'"$$BUILDKITE_BUILD_URL"'",
-            "color": "8388863"
-          }
-        ]
+      curl ${slack_api} -X POST -H 'Content-Type: application/json; charset=utf-8' \
+        -H "Authorization: Bearer $$SLACK_BEARER_TOKEN" -d '{
+          "channel": "'"$slack_feed"'",
+          "attachments": [
+            {
+              "author_name": "Solana Snapshot Parser",
+              "author_link": "https://github.com/marinade-finance/solana-snapshot-parser",
+              "color": "8000FF",
+              "title": "Parsing Solana Snapshot ('"$$epoch"').",
+              "title_link": "'"$${BUILDKITE_BUILD_URL}/#$${BUILDKITE_JOB_ID}"'",
+              "footer": "<'"$${BUILDKITE_BUILD_URL}/#$${BUILDKITE_JOB_ID}"'|View in Buildkite>"
+            }
+          ]
       }'
 
   - label: ":file_folder: Prepare snapshot directory"
     env:
       target_dir: /mnt/storage-1/snapshots
     commands:
-    - 'ulimit -a'
-    - 'mkdir -p /mnt/storage-1/snapshots'
-    - 'epoch=${EPOCH:-$(buildkite-agent meta-data get epoch)}'
-    - 'snapshot_dir=$(mktemp --directory -p "$$target_dir" "snapshot-$$epoch-$(date +%s)-XXXXXX")'
-    - 'buildkite-agent meta-data set --redacted-vars="" snapshot_dir "$$snapshot_dir"'
+    - ulimit -a
+    - mkdir -p /mnt/storage-1/snapshots
+    - epoch=${EPOCH:-$(buildkite-agent meta-data get epoch)}
+    - snapshot_dir=$(mktemp --directory -p "$$target_dir" "snapshot-$$epoch-$(date +%s)-XXXXXX")
+    - buildkite-agent meta-data set --redacted-vars="" snapshot_dir "$$snapshot_dir"
 
   - wait: ~
 
   - label: ":cloud: :arrow_right: :floppy_disk: Fetch genesis"
     commands:
-    - 'snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)'
-    - './scripts/fetch-genesis.bash "$$snapshot_dir"'
+    - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
+    - ./scripts/fetch-genesis.bash "$$snapshot_dir"
 
   - label: ":cloud: :arrow_right: :floppy_disk: Fetch snapshot"
     commands:
-    - 'snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)'
-    - 'epoch=$(buildkite-agent meta-data get epoch)'
-    - './scripts/fetch-snapshot.bash "$$epoch" "$$snapshot_dir"'
+    - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
+    - epoch=$(buildkite-agent meta-data get epoch)
+    - ./scripts/fetch-snapshot.bash "$$epoch" "$$snapshot_dir"
 
   - label: ":hammer_and_wrench: :rust: Build"
     commands:
-    - '. "$HOME/.cargo/env"'
-    - 'cargo build --release --bin snapshot-parser-validator-cli'
+    - . "$HOME/.cargo/env"
+    - cargo build --release --bin snapshot-parser-validator-cli
     artifact_paths:
       - target/release/snapshot-parser-validator-cli
 
@@ -71,9 +78,9 @@ steps:
       RUST_BACKTRACE: full
       # RUST_LOG: trace
     commands:
-    - 'snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)'
-    - 'buildkite-agent artifact download --include-retried-jobs target/release/snapshot-parser-validator-cli .'
-    - 'chmod +x target/release/snapshot-parser-validator-cli'
+    - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
+    - buildkite-agent artifact download --include-retried-jobs target/release/snapshot-parser-validator-cli .
+    - chmod +x target/release/snapshot-parser-validator-cli
     - |
       ./target/release/snapshot-parser-validator-cli \
         --ledger-path "$$snapshot_dir" \
@@ -84,25 +91,25 @@ steps:
 
   - label: ":floppy_disk: :arrow_left: :cloud: Fetch past validator data"
     commands:
-    - 'snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)'
-    - 'epoch=$(buildkite-agent meta-data get epoch)'
-    - 'previous_epoch=$((epoch - 1))'
-    - 'gcloud storage cp "$gs_bucket/$$previous_epoch/validators.json" "$gs_bucket/$$epoch/past-validators.json" || echo "Previous validator data not available!"'
+    - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
+    - epoch=$(buildkite-agent meta-data get epoch)
+    - previous_epoch=$((epoch - 1))
+    - gcloud storage cp "$gs_bucket/$$previous_epoch/validators.json" "$gs_bucket/$$epoch/past-validators.json" || echo "Previous validator data not available!"
 
   - label: ":floppy_disk: :arrow_right: :cloud: Upload artifacts"
     commands:
-    - 'snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)'
-    - 'epoch=$(buildkite-agent meta-data get epoch)'
-    - 'gcloud storage cp "$$snapshot_dir/validators.json" "$gs_bucket/$$epoch/"'
-    - 'gcloud storage cp "$$snapshot_dir/stakes.json" "$gs_bucket/$$epoch/"'
+    - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
+    - epoch=$(buildkite-agent meta-data get epoch)
+    - gcloud storage cp "$$snapshot_dir/validators.json" "$gs_bucket/$$epoch/"
+    - gcloud storage cp "$$snapshot_dir/stakes.json" "$gs_bucket/$$epoch/"
 
   - wait: ~
 
   - label: "🗑️ Cleanup"
     commands:
-    - 'snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)'
+    - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
     - 'echo "Cleaning snapshot dir: $$snapshot_dir"'
-    - 'rm -rf --preserve-root "$$snapshot_dir"'
+    - rm -rf --preserve-root "$$snapshot_dir"
 
   - wait: ~
 
