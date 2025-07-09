@@ -1,3 +1,4 @@
+use crate::utils::SliceAt;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
 
@@ -17,8 +18,9 @@ pub(crate) fn get_epoch_created_at(account: &Account) -> anyhow::Result<(u64, us
     if u8::from_le_bytes([account.data[MERKLE_ROOT_OPTION_BYTE_INDEX]]) == 0 {
         Ok((
             u64::from_le_bytes(
-                account.data[EPOCH_CREATED_AT_NO_MERKLE_ROOT_BYTE_INDEX
-                    ..EPOCH_CREATED_AT_NO_MERKLE_ROOT_BYTE_INDEX + 8]
+                account
+                    .data
+                    .slice_at(EPOCH_CREATED_AT_NO_MERKLE_ROOT_BYTE_INDEX, 8)?
                     .try_into()?,
             ),
             EPOCH_CREATED_AT_NO_MERKLE_ROOT_BYTE_INDEX,
@@ -30,8 +32,9 @@ pub(crate) fn get_epoch_created_at(account: &Account) -> anyhow::Result<(u64, us
         );
         Ok((
             u64::from_le_bytes(
-                account.data[EPOCH_CREATED_AT_WITH_MERKLE_ROOT_BYTE_INDEX
-                    ..EPOCH_CREATED_AT_WITH_MERKLE_ROOT_BYTE_INDEX + 8]
+                account
+                    .data
+                    .slice_at(EPOCH_CREATED_AT_WITH_MERKLE_ROOT_BYTE_INDEX, 8)?
                     .try_into()?,
             ),
             EPOCH_CREATED_AT_WITH_MERKLE_ROOT_BYTE_INDEX,
@@ -50,8 +53,9 @@ pub(crate) fn read_jito_commission_and_epoch(
     account: &Account,
     end_merkle_root_byte_index: usize,
 ) -> anyhow::Result<JitoCommissionMeta> {
-    let validator_vote_account: Pubkey = account.data
-        [VALIDATOR_VOTE_ACCOUNT_BYTE_INDEX..VALIDATOR_VOTE_ACCOUNT_BYTE_INDEX + 32]
+    let validator_vote_account: Pubkey = account
+        .data
+        .slice_at(VALIDATOR_VOTE_ACCOUNT_BYTE_INDEX, 32)?
         .try_into()
         .map_err(|e| {
             anyhow::anyhow!(
@@ -62,7 +66,9 @@ pub(crate) fn read_jito_commission_and_epoch(
         })?;
 
     let epoch_created_at: u64 = u64::from_le_bytes(
-        account.data[end_merkle_root_byte_index..end_merkle_root_byte_index + 8]
+        account
+            .data
+            .slice_at(end_merkle_root_byte_index, 8)?
             .try_into()
             .map_err(|e| {
                 anyhow::anyhow!(
@@ -76,7 +82,9 @@ pub(crate) fn read_jito_commission_and_epoch(
     let validator_commission_bps_byte_index =
         end_merkle_root_byte_index + VALIDATOR_COMMISSION_BPS_BYTE_OFFSET;
     let validator_commission_bps = u16::from_le_bytes(
-        account.data[validator_commission_bps_byte_index..validator_commission_bps_byte_index + 2]
+        account
+            .data
+            .slice_at(validator_commission_bps_byte_index, 2)?
             .try_into()
             .map_err(|e| {
                 anyhow::anyhow!(

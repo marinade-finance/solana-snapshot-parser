@@ -1,7 +1,8 @@
 use crate::utils::jito_parser::{get_epoch_created_at, read_jito_commission_and_epoch};
+use crate::utils::SliceAt;
 use solana_accounts_db::accounts_index::ScanConfig;
 use solana_program::pubkey::Pubkey;
-use solana_sdk::account::{Account, AccountSharedData};
+use solana_sdk::account::Account;
 use {log::info, solana_program::stake_history::Epoch, solana_runtime::bank::Bank, std::sync::Arc};
 
 pub struct JitoPriorityFeeMeta {
@@ -42,7 +43,7 @@ pub fn fetch_jito_priority_fee_metas(
     let mut jito_priority_fee_metas: Vec<JitoPriorityFeeMeta> = Vec::new();
 
     for (pubkey, shared_account) in jito_accounts_raw {
-        let account = <AccountSharedData as Into<Account>>::into(shared_account);
+        let account = Account::from(shared_account);
         if account.data[0..8] == PRIORITY_FEE_DISTRIBUTION_ACCOUNT_DISCRIMINATOR {
             update_jito_priority_fee_metas(&mut jito_priority_fee_metas, &account, pubkey, epoch)?;
         }
@@ -91,8 +92,9 @@ fn read_priority_fee_total_lamports_transferred(
     let total_lamports_transferred_byte_index =
         end_merkle_root_byte_index + TOTAL_LAMPORTS_TRASFERRED_BYTE_OFFSET;
     let total_lamports_transferred = u64::from_le_bytes(
-        account.data
-            [total_lamports_transferred_byte_index..total_lamports_transferred_byte_index + 8]
+        account
+            .data
+            .slice_at(total_lamports_transferred_byte_index, 8)?
             .try_into()
             .map_err(|e| {
                 anyhow::anyhow!(

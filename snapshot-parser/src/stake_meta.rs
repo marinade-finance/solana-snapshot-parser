@@ -10,10 +10,7 @@ use {
         stake_history::{Epoch, StakeHistory, StakeHistoryEntry},
     },
     solana_runtime::bank::Bank,
-    solana_sdk::{
-        account::{Account, AccountSharedData},
-        epoch_info::EpochInfo,
-    },
+    solana_sdk::{account::Account, epoch_info::EpochInfo},
     std::{fmt::Debug, sync::Arc},
 };
 
@@ -61,7 +58,7 @@ pub fn generate_stake_meta_collection(bank: &Arc<Bank>) -> anyhow::Result<StakeM
         ..
     } = bank.get_epoch_info();
 
-    let history_account = <AccountSharedData as Into<Account>>::into(
+    let history_account = Account::from(
         bank.get_account(&solana_program::sysvar::stake_history::ID)
             .expect("Failed to fetch the stake history"),
     );
@@ -76,7 +73,7 @@ pub fn generate_stake_meta_collection(bank: &Arc<Bank>) -> anyhow::Result<StakeM
     let mut stake_metas: Vec<StakeMeta> = Default::default();
 
     for (pubkey, shared_account) in stake_accounts_raw {
-        let account = <AccountSharedData as Into<Account>>::into(shared_account);
+        let account = Account::from(shared_account);
         let stake_account: StakeStateV2 = match bincode::deserialize(&account.data) {
             Ok(account) => account,
             Err(err) => {

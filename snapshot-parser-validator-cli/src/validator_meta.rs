@@ -1,5 +1,4 @@
 use crate::jito_priority_fee::fetch_jito_priority_fee_metas;
-use log::debug;
 use {
     crate::jito_mev::fetch_jito_mev_metas,
     log::info,
@@ -135,6 +134,17 @@ pub fn generate_validator_collection(bank: &Arc<Bank>) -> anyhow::Result<Validat
     let mut validator_metas = vote_account_metas
         .into_iter()
         .map(|vote_account_meta| {
+            let mev_commission = jito_mev_metas
+                .iter()
+                .find(|jito_mev_meta| jito_mev_meta.vote_account == vote_account_meta.vote_account)
+                .map(|jito_mev_meta| Some(jito_mev_meta.mev_commission))
+                .unwrap_or_else(|| {
+                    info!(
+                        "No Jito MEV commission found for vote account: {}",
+                        vote_account_meta.vote_account
+                    );
+                    None
+                });
             let priority_fee = jito_priority_fee_metas
                 .iter()
                 .find(|jito_priority_fee_meta| {
@@ -147,7 +157,7 @@ pub fn generate_validator_collection(bank: &Arc<Bank>) -> anyhow::Result<Validat
                     )
                 })
                 .unwrap_or_else(|| {
-                    debug!(
+                    info!(
                         "No Jito Priority Fee commission found for vote account: {}",
                         vote_account_meta.vote_account
                     );
@@ -156,19 +166,7 @@ pub fn generate_validator_collection(bank: &Arc<Bank>) -> anyhow::Result<Validat
             ValidatorMeta {
                 vote_account: vote_account_meta.vote_account,
                 commission: vote_account_meta.commission,
-                mev_commission: jito_mev_metas
-                    .iter()
-                    .find(|jito_mev_meta| {
-                        jito_mev_meta.vote_account == vote_account_meta.vote_account
-                    })
-                    .map(|jito_mev_meta| Some(jito_mev_meta.mev_commission))
-                    .unwrap_or_else(|| {
-                        debug!(
-                            "No Jito MEV commission found for vote account: {}",
-                            vote_account_meta.vote_account
-                        );
-                        None
-                    }),
+                mev_commission,
                 jito_priority_fee_commission: priority_fee.0,
                 jito_priority_fee_lamports: priority_fee.1,
                 stake: vote_account_meta.stake,

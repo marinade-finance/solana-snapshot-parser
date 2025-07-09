@@ -3,7 +3,7 @@ use crate::utils::jito_parser::{
 };
 use solana_accounts_db::accounts_index::ScanConfig;
 use solana_program::pubkey::Pubkey;
-use solana_sdk::account::{Account, AccountSharedData};
+use solana_sdk::account::Account;
 use {log::info, solana_program::stake_history::Epoch, solana_runtime::bank::Bank, std::sync::Arc};
 
 pub struct JitoMevMeta {
@@ -35,7 +35,7 @@ pub fn fetch_jito_mev_metas(bank: &Arc<Bank>, epoch: Epoch) -> anyhow::Result<Ve
     let mut jito_mev_metas: Vec<JitoMevMeta> = Vec::new();
 
     for (pubkey, shared_account) in jito_accounts_raw {
-        let account = <AccountSharedData as Into<Account>>::into(shared_account);
+        let account = Account::from(shared_account);
         if account.data[0..8] == TIP_DISTRIBUTION_ACCOUNT_DISCRIMINATOR {
             update_jito_mev_metas(&mut jito_mev_metas, &account, pubkey, epoch)?;
         }
