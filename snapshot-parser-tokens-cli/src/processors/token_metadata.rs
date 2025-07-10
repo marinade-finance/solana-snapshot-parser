@@ -89,7 +89,7 @@ impl ProcessorTokenMetadata {
             token_metadata_accounts.len()
         );
         for (pubkey, account) in token_metadata_accounts {
-            match Metadata::safe_deserialize(&mut account.data()) {
+            match Metadata::safe_deserialize(account.data()) {
                 Ok(metadata) => {
                     insert_token_metadata(
                         &self.db_sender,
