@@ -21,25 +21,25 @@ steps:
 
   - wait: ~
 
-  - label: ":mega: Notification"
-    commands:
-    - |
-      epoch=${EPOCH:-$(buildkite-agent meta-data get epoch)}
-      buildkite-agent meta-data set --redacted-vars="" epoch "$$epoch"
-      curl ${slack_api} -X POST -H 'Content-Type: application/json; charset=utf-8' \
-        -H "Authorization: Bearer $$SLACK_BEARER_TOKEN" -d '{
-          "channel": "'"$slack_feed"'",
-          "attachments": [
-            {
-              "author_name": "Solana Snapshot Parser",
-              "author_link": "https://github.com/marinade-finance/solana-snapshot-parser",
-              "color": "8000FF",
-              "title": "Parsing Solana Snapshot ('"$$epoch"').",
-              "title_link": "'"$${BUILDKITE_BUILD_URL}/#$${BUILDKITE_JOB_ID}"'",
-              "footer": "<'"$${BUILDKITE_BUILD_URL}/#$${BUILDKITE_JOB_ID}"'|View in Buildkite>"
-            }
-          ]
-      }'
+#  - label: ":mega: Notification"
+#    commands:
+#    - |
+#      epoch=${EPOCH:-$(buildkite-agent meta-data get epoch)}
+#      buildkite-agent meta-data set --redacted-vars="" epoch "$$epoch"
+#      curl ${slack_api} -X POST -H 'Content-Type: application/json; charset=utf-8' \
+#        -H "Authorization: Bearer $$SLACK_BEARER_TOKEN" -d '{
+#          "channel": "'"$slack_feed"'",
+#          "attachments": [
+#            {
+#              "author_name": "Solana Snapshot Parser",
+#              "author_link": "https://github.com/marinade-finance/solana-snapshot-parser",
+#              "color": "8000FF",
+#              "title": "Parsing Solana Snapshot ('"$$epoch"').",
+#              "title_link": "'"$${BUILDKITE_BUILD_URL}/#$${BUILDKITE_JOB_ID}"'",
+#              "footer": "<'"$${BUILDKITE_BUILD_URL}/#$${BUILDKITE_JOB_ID}"'|View in Buildkite>"
+#            }
+#          ]
+#      }'
 
   - label: ":file_folder: Prepare snapshot directory"
     env:
@@ -87,29 +87,29 @@ steps:
         --output-validator-meta-collection "$$snapshot_dir/validators.json" \
         --output-stake-meta-collection "$$snapshot_dir/stakes.json"
 
-  - wait: ~
-
-  - label: ":floppy_disk: :arrow_left: :cloud: Fetch past validator data"
-    commands:
-    - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
-    - epoch=$(buildkite-agent meta-data get epoch)
-    - previous_epoch=$((epoch - 1))
-    - gcloud storage cp "$gs_bucket/$$previous_epoch/validators.json" "$gs_bucket/$$epoch/past-validators.json" || echo "Previous validator data not available!"
-
-  - label: ":floppy_disk: :arrow_right: :cloud: Upload artifacts"
-    commands:
-    - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
-    - epoch=$(buildkite-agent meta-data get epoch)
-    - gcloud storage cp "$$snapshot_dir/validators.json" "$gs_bucket/$$epoch/"
-    - gcloud storage cp "$$snapshot_dir/stakes.json" "$gs_bucket/$$epoch/"
-
-  - wait: ~
-
-  - label: "🗑️ Cleanup"
-    commands:
-    - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
-    - 'echo "Cleaning snapshot dir: $$snapshot_dir"'
-    - rm -rf --preserve-root "$$snapshot_dir"
+#  - wait: ~
+#
+#  - label: ":floppy_disk: :arrow_left: :cloud: Fetch past validator data"
+#    commands:
+#    - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
+#    - epoch=$(buildkite-agent meta-data get epoch)
+#    - previous_epoch=$((epoch - 1))
+#    - gcloud storage cp "$gs_bucket/$$previous_epoch/validators.json" "$gs_bucket/$$epoch/past-validators.json" || echo "Previous validator data not available!"
+#
+#  - label: ":floppy_disk: :arrow_right: :cloud: Upload artifacts"
+#    commands:
+#    - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
+#    - epoch=$(buildkite-agent meta-data get epoch)
+#    - gcloud storage cp "$$snapshot_dir/validators.json" "$gs_bucket/$$epoch/"
+#    - gcloud storage cp "$$snapshot_dir/stakes.json" "$gs_bucket/$$epoch/"
+#
+#  - wait: ~
+#
+#  - label: "🗑️ Cleanup"
+#    commands:
+#    - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
+#    - 'echo "Cleaning snapshot dir: $$snapshot_dir"'
+#    - rm -rf --preserve-root "$$snapshot_dir"
 
   - wait: ~
 
