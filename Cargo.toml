@@ -21,6 +21,7 @@ incremental = false
 opt-level = 3
 
 [workspace.dependencies]
+ahash = "0.8.10"
 anchor-lang = "0.31.0"
 anyhow = "1.0.82"
 async-trait = "0.1.83"
