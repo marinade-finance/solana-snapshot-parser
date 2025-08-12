@@ -8,6 +8,7 @@ version = "0.0.0"
 edition = "2021"
 
 [dependencies]
+ahash = { workspace = true }
 anchor-lang = {workspace = true }
 anyhow = { workspace = true }
 async-trait = {workspace = true }
@@ -27,6 +28,3 @@ solana-runtime = { workspace = true }
 solana-sdk = { workspace = true }
 spl-token = { workspace = true }
 tokio = { workspace = true }
-
-[patch.crates-io]
-ahash = { package = "ahash", version = "^0.8.10" }

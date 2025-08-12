@@ -4,6 +4,7 @@ version = "0.0.0"
 edition = "2021"
 
 [dependencies]
+ahash = { workspace = true }
 anyhow = { workspace = true }
 bincode = { workspace = true }
 log = { workspace = true }
@@ -16,5 +17,3 @@ solana-runtime = { workspace = true }
 solana-sdk = { workspace = true }
 solana-accounts-db = { workspace = true }
 
-[patch.crates-io]
-ahash = { package = "ahash", version = "^0.8.10" }
