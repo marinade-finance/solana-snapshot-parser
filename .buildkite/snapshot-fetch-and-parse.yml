@@ -114,6 +114,8 @@ steps:
   - wait: ~
 
   - label: ":gear: Trigger Bonds Bidding to speed up pipeline processing"
+    env:
+      TRIGGER_BRANCH: "main"
     commands:
     - epoch=$(buildkite-agent meta-data get epoch)
     - |
@@ -123,10 +125,12 @@ steps:
           label: ":rocket: Trigger: Scheduler Bidding (epoch: $$epoch)"
           async: true
           build:
-            branch: $$BUILDKITE_BRANCH
+            branch: $TRIGGER_BRANCH
       EOF
 
   - label: ":gear: Trigger Stakes ETL to speed up pipeline processing"
+    env:
+      TRIGGER_BRANCH: "main"
     commands:
     - epoch=$(buildkite-agent meta-data get epoch)
     - |
@@ -136,7 +140,7 @@ steps:
           label: ":rocket: Trigger: ETL Stakes Scheduler (epoch: $$epoch)"
           async: true
           build:
-            branch: $$BUILDKITE_BRANCH
+            branch: $TRIGGER_BRANCH
       EOF
 
   - label: ":unlock: Concurrency gate unlock"
