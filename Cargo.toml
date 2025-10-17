@@ -5,10 +5,6 @@ members = [
     "snapshot-parser-tokens-cli",
 ]
 resolver = "1"
-exclude = [
-    "snapshot-parser-types"
-]
-
 
 [profile.release]
 codegen-units = 1
