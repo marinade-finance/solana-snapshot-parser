@@ -55,7 +55,7 @@ pub fn create_bank_from_ledger(ledger_path: &Path) -> anyhow::Result<Arc<Bank>> 
         &genesis_config,
         &blockstore,
         vec![PathBuf::from(ledger_path).join(Path::new("stake-meta.processors"))],
-        Some(&snapshot_config),
+        &snapshot_config,
         &ProcessOptions {
             slot_callback: Some(Arc::new(|bank| info!("Slot callback: {}", bank.slot()))),
             // account_indexes: AccountSecondaryIndexes {

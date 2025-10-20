@@ -1,7 +1,7 @@
 use crate::utils::jito_parser::{
     get_epoch_created_at, read_jito_commission_and_epoch, JitoCommissionMeta,
 };
-use solana_accounts_db::accounts_index::ScanConfig;
+use solana_accounts_db::accounts_index::{ScanConfig, ScanOrder};
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
 use {log::info, solana_program::stake_history::Epoch, solana_runtime::bank::Bank, std::sync::Arc};
@@ -22,7 +22,7 @@ pub fn fetch_jito_mev_metas(bank: &Arc<Bank>, epoch: Epoch) -> anyhow::Result<Ve
     let jito_accounts_raw = bank.get_program_accounts(
         &jito_program,
         &ScanConfig {
-            collect_all_unsorted: true,
+            scan_order: ScanOrder::Unsorted,
             ..ScanConfig::default()
         },
     )?;
