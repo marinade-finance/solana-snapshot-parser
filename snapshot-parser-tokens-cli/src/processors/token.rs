@@ -7,7 +7,7 @@ use crate::stats::ProcessorCallback;
 use async_trait::async_trait;
 use log::{debug, error};
 use rusqlite::ToSql;
-use solana_accounts_db::accounts_index::ScanConfig;
+use solana_accounts_db::accounts_index::{ScanConfig, ScanOrder};
 use solana_program::program_error::ProgramError;
 use solana_program::program_pack::Pack;
 use solana_program::pubkey::Pubkey;
@@ -94,7 +94,7 @@ impl ProcessorToken {
                 _ => false,
             },
             &ScanConfig {
-                collect_all_unsorted: true,
+                scan_order: ScanOrder::Unsorted,
                 ..ScanConfig::default()
             },
         )?;

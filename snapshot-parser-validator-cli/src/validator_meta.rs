@@ -88,12 +88,13 @@ fn fetch_vote_account_metas(bank: &Arc<Bank>, epoch: Epoch) -> Vec<VoteAccountMe
         .iter()
         .filter_map(|(pubkey, (stake, vote_account))| {
             let credits = vote_account
-                .vote_state()
-                .epoch_credits
-                .iter()
-                .find_map(|(credits_epoch, _, prev_credits)| {
-                    if *credits_epoch == epoch {
-                        Some(vote_account.vote_state().credits() - *prev_credits)
+                .vote_state_view()
+                .epoch_credits_iter()
+                .find_map(|epoch_credit_item| {
+                    let credits_epoch = epoch_credit_item.credits();
+                    let prev_credits = epoch_credit_item.prev_credits();
+                    if credits_epoch == epoch {
+                        Some(vote_account.vote_state_view().credits() - prev_credits)
                     } else {
                         None
                     }
@@ -102,7 +103,7 @@ fn fetch_vote_account_metas(bank: &Arc<Bank>, epoch: Epoch) -> Vec<VoteAccountMe
 
             Some(VoteAccountMeta {
                 vote_account: *pubkey,
-                commission: vote_account.vote_state().commission,
+                commission: vote_account.vote_state_view().commission(),
                 stake: *stake,
                 credits,
             })

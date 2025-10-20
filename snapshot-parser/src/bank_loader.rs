@@ -49,13 +49,13 @@ pub fn create_bank_from_ledger(ledger_path: &Path) -> anyhow::Result<Arc<Bank>> 
     info!("Blockstore loaded.");
 
     let drive_dir = PathBuf::from(ledger_path).join("drive1");
-    fs::create_dir_all(&drive_dir).unwrap();
+    fs::create_dir_all(&drive_dir)?;
 
     let (bank_forks, ..) = bank_forks_utils::load_bank_forks(
         &genesis_config,
         &blockstore,
         vec![PathBuf::from(ledger_path).join(Path::new("stake-meta.processors"))],
-        Some(&snapshot_config),
+        &snapshot_config,
         &ProcessOptions {
             slot_callback: Some(Arc::new(|bank| info!("Slot callback: {}", bank.slot()))),
             // account_indexes: AccountSecondaryIndexes {
