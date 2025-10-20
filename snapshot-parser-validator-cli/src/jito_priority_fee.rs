@@ -1,6 +1,6 @@
 use crate::utils::jito_parser::{get_epoch_created_at, read_jito_commission_and_epoch};
 use crate::utils::SliceAt;
-use solana_accounts_db::accounts_index::ScanConfig;
+use solana_accounts_db::accounts_index::{ScanConfig, ScanOrder};
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
 use {log::info, solana_program::stake_history::Epoch, solana_runtime::bank::Bank, std::sync::Arc};
@@ -20,7 +20,7 @@ pub struct JitoPriorityFeeMeta {
 const JITO_PRIORITY_FEE_DISTRIBUTION_PROGRAM: &str = "Priority6weCZ5HwDn29NxLFpb7TDp2iLZ6XKc5e8d3";
 const PRIORITY_FEE_DISTRIBUTION_ACCOUNT_DISCRIMINATOR: [u8; 8] =
     [163, 183, 254, 12, 121, 137, 235, 27];
-const TOTAL_LAMPORTS_TRASFERRED_BYTE_OFFSET: usize = 8 + 2 + 8; // epoch + commission + expires_at
+const TOTAL_LAMPORTS_TRASFERED_BYTE_OFFSET: usize = 8 + 2 + 8; // epoch + commission + expires_at
 
 pub fn fetch_jito_priority_fee_metas(
     bank: &Arc<Bank>,
@@ -30,7 +30,7 @@ pub fn fetch_jito_priority_fee_metas(
     let jito_accounts_raw = bank.get_program_accounts(
         &jito_program,
         &ScanConfig {
-            collect_all_unsorted: true,
+            scan_order: ScanOrder::Unsorted,
             ..ScanConfig::default()
         },
     )?;
@@ -90,7 +90,7 @@ fn read_priority_fee_total_lamports_transferred(
     end_merkle_root_byte_index: usize, // a byte index directly after MerkleRoot struct
 ) -> anyhow::Result<u64> {
     let total_lamports_transferred_byte_index =
-        end_merkle_root_byte_index + TOTAL_LAMPORTS_TRASFERRED_BYTE_OFFSET;
+        end_merkle_root_byte_index + TOTAL_LAMPORTS_TRASFERED_BYTE_OFFSET;
     let total_lamports_transferred = u64::from_le_bytes(
         account
             .data

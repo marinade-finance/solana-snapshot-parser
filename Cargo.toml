@@ -18,7 +18,7 @@ opt-level = 3
 
 [workspace.dependencies]
 ahash = "0.8.10"
-anchor-lang = "0.31.0"
+anchor-lang = "0.32.1"
 anyhow = "1.0.82"
 async-trait = "0.1.83"
 base64 = "0.22.1"
@@ -35,9 +35,10 @@ serde = "1.0.197"
 serde_json = "1.0.114"
 shellexpand = "3.1.0"
 snapshot-parser = { path = "./snapshot-parser" }
-solana-ledger = "2"
-solana-program = "2"
-solana-runtime = "2"
-solana-sdk = "2"
-solana-accounts-db = "2"
+solana-ledger = "2.3.13"
+solana-program = "2.3.0"
+solana-pubkey = "2.3.0"
+solana-runtime = "2.3.13"
+solana-sdk = "2.3.1"
+solana-accounts-db = "2.3.13"
 tokio = { version = "1", features = ["full"] }

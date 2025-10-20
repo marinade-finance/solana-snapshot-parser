@@ -10,7 +10,7 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use log::{debug, error, warn};
 use rusqlite::ToSql;
-use solana_accounts_db::accounts_index::ScanConfig;
+use solana_accounts_db::accounts_index::{ScanConfig, ScanOrder};
 use solana_program::pubkey::Pubkey;
 use solana_runtime::bank::Bank;
 use solana_sdk::account::ReadableAccount;
@@ -94,7 +94,7 @@ impl ProcessorVeMnde {
                 _ => false,
             },
             &ScanConfig {
-                collect_all_unsorted: true,
+                scan_order: ScanOrder::Unsorted,
                 ..ScanConfig::default()
             },
         )?;
