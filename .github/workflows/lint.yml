@@ -18,9 +18,9 @@ env:
   RUSTFLAGS: -C strip=symbols -C opt-level=s
 
 jobs:
-  lint-and-test:
+  lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - name: 🚧 Checkout project
         uses: actions/checkout@v5
