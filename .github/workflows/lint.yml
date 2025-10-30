@@ -1,4 +1,6 @@
 name: Cargo lint
+permissions:
+  contents: read
 
 on:
   push:
