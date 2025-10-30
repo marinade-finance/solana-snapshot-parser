@@ -21,7 +21,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: 🚧 Checkout project
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: ⚙️ Install rust compilation dependencies
         run: |
@@ -33,10 +33,10 @@ jobs:
         with:
           node-version: 20
 
-      - name: 🦿 Install Rust tookchain
-        uses: dtolnay/rust-toolchain@1.83.0
+      - name: 🦿 Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
         with:
-          components: rustfmt, clippy
+          toolchain: nightly
 
       - name: 🧠 Cache Rust dependencies
         uses: actions/cache@v4
