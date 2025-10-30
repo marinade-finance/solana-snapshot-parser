@@ -14,6 +14,12 @@ pub struct Stats {
     callbacks: Arc<Mutex<Vec<Arc<dyn ProcessorCallback>>>>,
 }
 
+impl Default for Stats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Stats {
     pub fn new() -> Self {
         Self {

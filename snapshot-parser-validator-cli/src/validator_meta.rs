@@ -86,7 +86,7 @@ struct VoteAccountMeta {
 fn fetch_vote_account_metas(bank: &Arc<Bank>, epoch: Epoch) -> Vec<VoteAccountMeta> {
     bank.vote_accounts()
         .iter()
-        .filter_map(|(pubkey, (stake, vote_account))| {
+        .map(|(pubkey, (stake, vote_account))| {
             let credits = vote_account
                 .vote_state()
                 .epoch_credits
@@ -100,12 +100,12 @@ fn fetch_vote_account_metas(bank: &Arc<Bank>, epoch: Epoch) -> Vec<VoteAccountMe
                 })
                 .unwrap_or(0);
 
-            Some(VoteAccountMeta {
+            VoteAccountMeta {
                 vote_account: *pubkey,
                 commission: vote_account.vote_state().commission,
                 stake: *stake,
                 credits,
-            })
+            }
         })
         .collect()
 }

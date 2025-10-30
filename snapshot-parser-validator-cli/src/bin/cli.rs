@@ -72,7 +72,7 @@ fn main() -> anyhow::Result<()> {
         })
     };
 
-    for handle in vec![
+    for handle in [
         validator_meta_collection_handle,
         stake_meta_collection_handle,
     ] {
