@@ -95,7 +95,6 @@ impl VotingMintConfig {
             self.digit_shift_native(amount_native)?,
             self.max_extra_lockup_vote_weight_scaled_factor,
         )
-        .map_err(Into::into)
     }
 }
 
@@ -370,7 +369,7 @@ impl Lockup {
         }
 
         let lockup_secs = self.seconds_left(self.start_ts);
-        if lockup_secs % period_secs != 0 {
+        if !lockup_secs.is_multiple_of(period_secs) {
             return Err(anyhow!(
                 "assert_eq but lockup_secs {} % period_secs {} != 0",
                 lockup_secs,

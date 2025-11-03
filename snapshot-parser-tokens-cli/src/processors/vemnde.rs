@@ -89,10 +89,7 @@ impl ProcessorVeMnde {
 
         let vsr_voter_accounts = self.bank.get_filtered_program_accounts(
             &self.marinade_vsr_program_addr,
-            |account_data| match account_data.data().len() {
-                VOTER_ACCOUNT_LEN => true,
-                _ => false,
-            },
+            |account_data| matches!(account_data.data().len(), VOTER_ACCOUNT_LEN),
             &ScanConfig {
                 collect_all_unsorted: true,
                 ..ScanConfig::default()
@@ -109,7 +106,7 @@ impl ProcessorVeMnde {
                     &self.db_sender,
                     &self.vemnde_counter,
                     &pubkey,
-                    &account.owner(),
+                    account.owner(),
                     &self.vsr_registrar,
                     &voter_account,
                     self.current_ts,

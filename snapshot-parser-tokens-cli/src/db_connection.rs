@@ -78,7 +78,7 @@ impl SQLiteExecutor {
         drop(stmt);
 
         if let Some(bulk_size) = self.tx_bulk {
-            if self.transaction_batch_counter % bulk_size == 0
+            if self.transaction_batch_counter.is_multiple_of(bulk_size)
                 || self.transaction_batch_counter == u16::MAX
             {
                 self.commit_db("execute");
@@ -113,7 +113,7 @@ impl SQLiteExecutor {
         cache_size_mb: Option<i64>,
         mmap_size_mb: Option<u16>,
     ) -> rusqlite::Result<Connection> {
-        let db = Connection::open(&path)?;
+        let db = Connection::open(path)?;
         db.pragma_update(None, "synchronous", false)?;
         db.pragma_update(None, "journal_mode", "off")?;
         db.pragma_update(None, "locking_mode", "exclusive")?;

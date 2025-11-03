@@ -48,15 +48,15 @@ impl ProgressCounter {
 
     pub fn inc(&self) {
         let count = self.counter.fetch_add(1, Ordering::Relaxed);
-        if count % 1024 == 0 {
+        if count.is_multiple_of(1024) {
             self.progress_bar.lock().unwrap().set_position(count)
         }
     }
 }
 
-impl Into<u64> for ProgressCounter {
-    fn into(self) -> u64 {
-        self.get()
+impl From<ProgressCounter> for u64 {
+    fn from(val: ProgressCounter) -> Self {
+        val.get()
     }
 }
 

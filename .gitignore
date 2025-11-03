@@ -15,6 +15,7 @@ target
 # JS
 node_modules/
 build/
+pnpm-lock.yaml
 
 # Anchor
 .anchor
