@@ -113,21 +113,6 @@ steps:
 
   - wait: ~
 
-  - label: ":gear: Trigger Bonds Bidding to speed up pipeline processing"
-    env:
-      TRIGGER_BRANCH: "main"
-    commands:
-    - epoch=$(buildkite-agent meta-data get epoch)
-    - |
-      cat <<EOF | buildkite-agent pipeline upload
-      steps:
-        - trigger: "scheduler-bidding"
-          label: ":rocket: Trigger: Scheduler Bidding (epoch: $$epoch)"
-          async: true
-          build:
-            branch: $TRIGGER_BRANCH
-      EOF
-
   - label: ":gear: Trigger Stakes ETL to speed up pipeline processing"
     env:
       TRIGGER_BRANCH: "main"
