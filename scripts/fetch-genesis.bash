@@ -16,6 +16,7 @@ then
     exit 1
 fi
 
-wget --retry-connrefused --waitretry=1 --tries=10 --timeout=30 -P "$target_dir" http://api.mainnet-beta.solana.com/genesis.tar.bz2
+rpc_url="${RPC_URL:-https://api.mainnet-beta.solana.com}"
+wget --retry-connrefused --waitretry=1 --tries=10 --timeout=30 -P "$target_dir" "${rpc_url}/genesis.tar.bz2"
 
 pv "$target_dir"/genesis.tar.bz2 | tar -xj -C "$target_dir"
