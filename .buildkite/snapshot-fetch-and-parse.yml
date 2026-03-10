@@ -49,15 +49,16 @@ steps:
     - ulimit -a
     - epoch=${EPOCH:-$(buildkite-agent meta-data get epoch)}
     - |
+      mkdir -p $$target_dir
+      snapshot_dir=$(mktemp --directory -p "$$target_dir" "snapshot-$$epoch-$(date +%s)-XXXXXX")
+
       # Check if snapshot already exists in local storage
-      local_snapshot=$(find $$local_storage/*/$$epoch/ -name '*.zst' 2>/dev/null | head -1)
+      local_snapshot=$(find $$local_storage/*/$$epoch/ -name 'snapshot-*.tar.zst' 2>/dev/null | head -1)
       if [[ -n "$$local_snapshot" ]]; then
-        snapshot_dir=$(dirname "$$local_snapshot")
-        echo "Found local snapshot at: $$snapshot_dir"
+        echo "Found local snapshot at: $$local_snapshot"
+        ln -s "$$local_snapshot" "$$snapshot_dir/"
         buildkite-agent meta-data set --redacted-vars="" snapshot_local "true"
       else
-        mkdir -p $$target_dir
-        snapshot_dir=$(mktemp --directory -p "$$target_dir" "snapshot-$$epoch-$(date +%s)-XXXXXX")
         echo "No local snapshot found, using temp dir: $$snapshot_dir"
         buildkite-agent meta-data set --redacted-vars="" snapshot_local "false"
       fi
@@ -99,7 +100,6 @@ steps:
     - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
     - buildkite-agent artifact download --include-retried-jobs target/release/snapshot-parser-validator-cli .
     - chmod +x target/release/snapshot-parser-validator-cli
-    - rm -f "$$snapshot_dir/validators.json" "$$snapshot_dir/stakes.json"
     - |
       ./target/release/snapshot-parser-validator-cli \
         --ledger-path "$$snapshot_dir" \
@@ -126,15 +126,9 @@ steps:
 
   - label: "🗑️ Cleanup"
     commands:
-    - snapshot_local=$(buildkite-agent meta-data get snapshot_local)
-    - |
-      if [[ "$$snapshot_local" == "true" ]]; then
-        echo "Skipping cleanup, snapshot is from local storage"
-      else
-        snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
-        echo "Cleaning snapshot dir: $$snapshot_dir"
-        rm -rf --preserve-root "$$snapshot_dir"
-      fi
+    - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
+    - 'echo "Cleaning snapshot dir: $$snapshot_dir"'
+    - rm -rf --preserve-root "$$snapshot_dir"
 
   - wait: ~
 
