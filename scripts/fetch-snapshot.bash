@@ -5,10 +5,11 @@ set -o pipefail
 
 epoch="$1"
 target_dir="$2"
+gs_bucket="${3:-gs://marinade-solana-snapshot-mainnet}"
 
 if [[ -z $epoch ]] || [[ -z $target_dir ]]
 then
-    echo "Usage: $0 <epoch> <target-dir>" >&2
+    echo "Usage: $0 <epoch> <target-dir> [gs-bucket]" >&2
     exit 1
 fi
 
@@ -21,10 +22,9 @@ fi
 target_dir_absolute="$(realpath $target_dir)"
 echo "Target path: $target_dir_absolute" >&2
 
-marinade_gs_bucket="gs://marinade-solana-snapshot-mainnet"
 jito_gs_bucket="gs://jito-mainnet"
 
-gs_files=$(gcloud storage ls "$marinade_gs_bucket/$epoch/**/*.tar.zst" || gcloud storage ls "$jito_gs_bucket/$epoch/**/*.tar.zst")
+gs_files=$(gcloud storage ls "$gs_bucket/$epoch/**/*.tar.zst" || gcloud storage ls "$jito_gs_bucket/$epoch/**/*.tar.zst")
 echo "Available objects:" >&2
 echo "$gs_files" >&2
 

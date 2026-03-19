@@ -1,5 +1,12 @@
 agents:
   queue: "snapshots"
+env:
+  # example gcloud path: marinade-solana-snapshot-mainnet/942/build01
+  GCLOUD_SNAPSHOTS: "gs://marinade-solana-snapshot-mainnet"
+  # example local path: /mnt/snapshots-storage/snapshots/build01/942
+  LOCAL_SNAPSHOTS: "/mnt/snapshots-storage/snapshots"
+  LOCAL_TEST_SNAPSHOTS: "/mnt/snapshots-storage/test-snapshots"
+  WORKING_DIR: "/mnt/storage-1/snapshots"
 
 steps:
   - command: echo "--> Start of concurrency gate"
@@ -11,20 +18,55 @@ steps:
   - label: ":recycle: Pruning old snapshot directories"
     concurrency_group: 'solana-snapshot-parser/fetch'
     concurrency: 1
-    env:
-      snapshots_dir: /mnt/storage-1/snapshots
     commands:
-    - 'ls -td -- /mnt/storage-1/snapshots/*/ | awk "NR>1" | tee /dev/stderr | xargs rm -rf'
+    - 'ls -td -- "$WORKING_DIR"/*/ | awk "NR>1" | tee /dev/stderr | xargs rm -rf'
+
+  - label: ":black_nib: Env variables setup"
+    key: "setup-env-init"
+    commands:
+    - |
+      [[ -n "$TEST_MODE" && "$TEST_MODE" != "null" ]] && local_snapshot_dir="$LOCAL_TEST_SNAPSHOTS" || local_snapshot_dir="$LOCAL_SNAPSHOTS"
+      buildkite-agent meta-data set --redacted-vars='' local_snapshot_dir "$$local_snapshot_dir"
+    - |
+      echo "Test mode: $TEST_MODE, Local Snapshot Dir: '$$local_snapshot_dir'"
+
+  - label: ":memo: Annotate retry parameters"
+    depends_on: "setup-env-init"
+    allow_dependency_failure: true
+    commands:
+      - |
+        cat <<- EOF | buildkite-agent annotate --priority 6 --style info --context "general-info"
+        ### Retry environment variables
+        If you need to retry the build, use the following parameters:
+
+        \`\`\`
+        TEST_MODE=$TEST_MODE
+        \`\`\`
+        EOF
+
+  - wait: ~
 
   - label: ":calendar: Schedule"
     concurrency_group: 'solana-snapshot-parser/fetch'
     concurrency: 1
     commands:
     - |
-      max_processed_epoch=$(gcloud storage ls "gs://marinade-solana-snapshot-mainnet/**/*.json" | awk -F / '{print $$4}' | sort -nr | head -n 1)
+      max_processed_epoch=$(gcloud storage ls "$GCLOUD_SNAPSHOTS/**/stakes.json" | awk -F / '{print $$4}' | sort -nr | head -n 1)
       max_processed_epoch="$${max_processed_epoch%%[^0-9]*}"
-      max_available_epoch=$(gcloud storage ls "gs://marinade-solana-snapshot-mainnet/**/*.tar.zst" | awk -F / '{print $$4}' | sort -nr | head -n 1)
+      max_available_gcloud=$(gcloud storage ls "$GCLOUD_SNAPSHOTS/**/*.tar.zst" | awk -F / '{print $$4}' | sort -nr | head -n 1)
+      max_available_gcloud="$${max_available_gcloud%%[^0-9]*}"
+      local_snapshot_dir=$(buildkite-agent meta-data get local_snapshot_dir)
+      max_available_local=$(find "$$local_snapshot_dir" -name 'snapshot-*.tar.zst' -printf '%h\n' 2>/dev/null | awk -F / '{print $$NF}' | sort -nr | head -n 1)
+      max_available_local="$${max_available_local%%[^0-9]*}"
+
+      max_available_epoch=$$max_available_gcloud
+      if [[ -n "$$max_available_local" ]] && (( $${max_available_local:-0} > $${max_available_epoch:-0} )); then
+        max_available_epoch=$$max_available_local
+      fi
+
       echo max_processed_epoch: $$max_processed_epoch
+      echo max_available_gcloud: $$max_available_gcloud
+      echo max_available_local: $$max_available_local
       echo max_available_epoch: $$max_available_epoch
       (( $$max_processed_epoch < $$max_available_epoch )) && cat <<EOF | buildkite-agent pipeline upload
       steps:
@@ -35,6 +77,8 @@ steps:
             branch: $$BUILDKITE_BRANCH
             env:
               EPOCH: $$max_available_epoch
+              TEST_MODE: $TEST_MODE
+              LOCAL_SNAPSHOT_DIR: $$local_snapshot_dir
       EOF
 
       echo Scheduling complete
