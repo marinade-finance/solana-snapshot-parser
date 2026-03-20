@@ -57,6 +57,8 @@ steps:
     commands:
     - |
       epoch=${EPOCH:-$(buildkite-agent meta-data get epoch)}
+      local_snapshot_dir=$(buildkite-agent meta-data get local_snapshot_dir)
+      test_mode=$([[ -n "$TEST_MODE" && "$TEST_MODE" != "null" ]] && echo " [Test Mode: $$local_snapshot_dir]" || echo "")
       buildkite-agent meta-data set --redacted-vars="" epoch "$$epoch"
       curl ${slack_api} -X POST -H 'Content-Type: application/json; charset=utf-8' \
         -H "Authorization: Bearer $$SLACK_BEARER_TOKEN" -d '{
@@ -66,7 +68,7 @@ steps:
               "author_name": "Solana Snapshot Parser",
               "author_link": "https://github.com/marinade-finance/solana-snapshot-parser",
               "color": "8000FF",
-              "title": "Parsing Solana Snapshot ('"$$epoch"').",
+              "title": "Parsing Solana Snapshot ('"$$epoch"')'"$$test_mode"'.",
               "title_link": "'"$${BUILDKITE_BUILD_URL}/#$${BUILDKITE_JOB_ID}"'",
               "footer": "<'"$${BUILDKITE_BUILD_URL}/#$${BUILDKITE_JOB_ID}"'|View in Buildkite>"
             }
