@@ -64,6 +64,8 @@ steps:
         max_available_epoch=$$max_available_local
       fi
 
+      test_mode=$([[ -n "$TEST_MODE" && "$TEST_MODE" != "null" ]] && echo " [Test Mode]" || echo "")
+
       echo max_processed_epoch: $$max_processed_epoch
       echo max_available_gcloud: $$max_available_gcloud
       echo max_available_local: $$max_available_local
@@ -71,7 +73,7 @@ steps:
       (( $$max_processed_epoch < $$max_available_epoch )) && cat <<EOF | buildkite-agent pipeline upload
       steps:
         - trigger: "solana-snapshot-parser"
-          label: ":rocket: Trigger: Fetch Solana snapshot ($$max_available_epoch)"
+          label: ":rocket: Trigger$${test_mode}: Fetch Solana snapshot ($$max_available_epoch)"
           async: false
           build:
             branch: $$BUILDKITE_BRANCH
