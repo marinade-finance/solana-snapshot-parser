@@ -93,10 +93,7 @@ impl ProcessorToken {
                 }
                 _ => false,
             },
-            &ScanConfig {
-                collect_all_unsorted: true,
-                ..ScanConfig::default()
-            },
+            &ScanConfig::default(),
         )?;
 
         debug!("Token processor loaded {} accounts", token_accounts.len());

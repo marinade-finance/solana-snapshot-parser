@@ -76,13 +76,9 @@ impl ProcessorTokenMetadata {
             "Loading token metadata accounts for owner {} from bank...",
             metadata_id,
         );
-        let token_metadata_accounts = self.bank.get_program_accounts(
-            &metadata_id,
-            &ScanConfig {
-                collect_all_unsorted: true,
-                ..ScanConfig::default()
-            },
-        )?;
+        let token_metadata_accounts = self
+            .bank
+            .get_program_accounts(&metadata_id, &ScanConfig::default())?;
 
         debug!(
             "Token metadata processor loaded {} accounts",

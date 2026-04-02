@@ -1,12 +1,12 @@
-use anchor_lang::prelude::*;
 use anyhow::anyhow;
+use borsh::BorshDeserialize;
 use solana_program::pubkey::Pubkey;
 use std::cmp::min;
 
 const SCALED_FACTOR_BASE: u64 = 1_000_000_000;
 
 // imported from https://github.com/blockworks-foundation/voter-stake-registry/blob/release-v0.2.4/programs/voter-stake-registry/src/state/registrar.rs
-#[derive(AnchorDeserialize)]
+#[derive(BorshDeserialize)]
 pub struct Registrar {
     pub discriminator: [u8; 8],
     pub governance_program_id: Pubkey,
@@ -26,7 +26,7 @@ pub struct Registrar {
     pub reserved3: [u64; 11], // split because `Default` does not support [u8; 95]
 }
 
-#[derive(AnchorDeserialize)]
+#[derive(BorshDeserialize)]
 pub struct VotingMintConfig {
     /// Mint for this entry.
     pub mint: Pubkey,
@@ -99,7 +99,7 @@ impl VotingMintConfig {
 }
 
 // imported from https://github.com/marinade-finance/voter-stake-registry/blob/governance-v3.1.0-marinade/programs/voter-stake-registry/src/state/voter.rs
-#[derive(AnchorDeserialize)]
+#[derive(BorshDeserialize)]
 pub struct Voter {
     pub discriminator: [u8; 8],
     pub voter_authority: Pubkey,
@@ -110,7 +110,7 @@ pub struct Voter {
     pub reserved: [u8; 94],
 }
 
-#[derive(AnchorDeserialize)]
+#[derive(BorshDeserialize)]
 pub struct DepositEntry {
     // Locked state.
     pub lockup: Lockup,
@@ -325,7 +325,7 @@ impl DepositEntry {
     }
 }
 
-#[derive(AnchorDeserialize)]
+#[derive(BorshDeserialize)]
 pub struct Lockup {
     /// Start of the lockup.
     ///
@@ -398,7 +398,7 @@ impl Lockup {
 }
 
 #[repr(u8)]
-#[derive(AnchorDeserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(BorshDeserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockupKind {
     /// No lockup, tokens can be withdrawn as long as not engaged in a proposal.
     None,

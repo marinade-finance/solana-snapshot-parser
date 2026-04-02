@@ -5,9 +5,9 @@ use {
     serde::{Deserialize, Serialize},
     snapshot_parser::serde_serialize::pubkey_string_conversion,
     solana_program::pubkey::Pubkey,
-    solana_program::stake_history::Epoch,
     solana_runtime::bank::Bank,
     solana_sdk::epoch_info::EpochInfo,
+    solana_stake_interface::stake_history::Epoch,
     std::{fmt::Debug, sync::Arc},
 };
 
@@ -87,13 +87,12 @@ fn fetch_vote_account_metas(bank: &Arc<Bank>, epoch: Epoch) -> Vec<VoteAccountMe
     bank.vote_accounts()
         .iter()
         .map(|(pubkey, (stake, vote_account))| {
-            let credits = vote_account
-                .vote_state()
-                .epoch_credits
-                .iter()
-                .find_map(|(credits_epoch, _, prev_credits)| {
-                    if *credits_epoch == epoch {
-                        Some(vote_account.vote_state().credits() - *prev_credits)
+            let vote_state_view = vote_account.vote_state_view();
+            let credits = vote_state_view
+                .epoch_credits_iter()
+                .find_map(|item| {
+                    if item.epoch() == epoch {
+                        Some(vote_state_view.credits() - item.prev_credits())
                     } else {
                         None
                     }
@@ -102,7 +101,7 @@ fn fetch_vote_account_metas(bank: &Arc<Bank>, epoch: Epoch) -> Vec<VoteAccountMe
 
             VoteAccountMeta {
                 vote_account: *pubkey,
-                commission: vote_account.vote_state().commission,
+                commission: vote_state_view.commission(),
                 stake: *stake,
                 credits,
             }
