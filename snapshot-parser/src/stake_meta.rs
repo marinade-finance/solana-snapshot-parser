@@ -1,16 +1,16 @@
 use {
     crate::serde_serialize::{option_pubkey_string_conversion, pubkey_string_conversion},
+    crate::utils::lamports_to_sol,
     log::{error, info},
     serde::{Deserialize, Serialize},
     solana_accounts_db::accounts_index::ScanConfig,
-    solana_program::{
-        native_token::lamports_to_sol,
-        pubkey::Pubkey,
-        stake::state::StakeStateV2,
-        stake_history::{Epoch, StakeHistory, StakeHistoryEntry},
-    },
+    solana_program::pubkey::Pubkey,
     solana_runtime::bank::Bank,
     solana_sdk::{account::Account, epoch_info::EpochInfo},
+    solana_stake_interface::{
+        stake_history::{Epoch, StakeHistory, StakeHistoryEntry},
+        state::StakeStateV2,
+    },
     std::{fmt::Debug, sync::Arc},
 };
 
@@ -59,14 +59,14 @@ pub fn generate_stake_meta_collection(bank: &Arc<Bank>) -> anyhow::Result<StakeM
     } = bank.get_epoch_info();
 
     let history_account = Account::from(
-        bank.get_account(&solana_program::sysvar::stake_history::ID)
+        bank.get_account(&solana_stake_interface::sysvar::stake_history::ID)
             .expect("Failed to fetch the stake history"),
     );
     let history: StakeHistory = bincode::deserialize(&history_account.data)?;
     info!("Stake history loaded.");
 
     let stake_accounts_raw =
-        bank.get_program_accounts(&solana_program::stake::program::ID, &ScanConfig::default())?;
+        bank.get_program_accounts(&solana_stake_interface::program::ID, &ScanConfig::default())?;
 
     info!("Stake processors loaded: {}", stake_accounts_raw.len());
 

@@ -33,3 +33,6 @@ docker-target/
 # Fuzz attempts
 fuzz/
 hfuzz*
+
+# Local
+*.local.json

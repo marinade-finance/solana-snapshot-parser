@@ -1,10 +1,15 @@
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use solana_native_token::LAMPORTS_PER_SOL;
 use std::path::Path;
 use std::{
     fs::File,
     io::{BufReader, BufWriter, Write},
 };
+
+pub fn lamports_to_sol(lamports: u64) -> f64 {
+    lamports as f64 / LAMPORTS_PER_SOL as f64
+}
 
 pub fn write_to_json_file<T: Serialize>(data: &T, out_path: &str) -> anyhow::Result<()> {
     let file = File::create(out_path)?;

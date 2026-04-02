@@ -3,7 +3,10 @@ use crate::utils::SliceAt;
 use solana_accounts_db::accounts_index::ScanConfig;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
-use {log::info, solana_program::stake_history::Epoch, solana_runtime::bank::Bank, std::sync::Arc};
+use {
+    log::info, solana_runtime::bank::Bank, solana_stake_interface::stake_history::Epoch,
+    std::sync::Arc,
+};
 
 pub struct JitoPriorityFeeMeta {
     pub validator_vote_account: Pubkey,
@@ -27,13 +30,7 @@ pub fn fetch_jito_priority_fee_metas(
     epoch: Epoch,
 ) -> anyhow::Result<Vec<JitoPriorityFeeMeta>> {
     let jito_program: Pubkey = JITO_PRIORITY_FEE_DISTRIBUTION_PROGRAM.try_into()?;
-    let jito_accounts_raw = bank.get_program_accounts(
-        &jito_program,
-        &ScanConfig {
-            collect_all_unsorted: true,
-            ..ScanConfig::default()
-        },
-    )?;
+    let jito_accounts_raw = bank.get_program_accounts(&jito_program, &ScanConfig::default())?;
     info!(
         "jito priority fee distribution program {} `raw` processors loaded: {}",
         JITO_PRIORITY_FEE_DISTRIBUTION_PROGRAM,

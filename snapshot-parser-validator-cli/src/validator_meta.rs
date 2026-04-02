@@ -4,10 +4,11 @@ use {
     log::info,
     serde::{Deserialize, Serialize},
     snapshot_parser::serde_serialize::pubkey_string_conversion,
+    snapshot_parser::utils::lamports_to_sol,
     solana_program::pubkey::Pubkey,
-    solana_program::stake_history::Epoch,
     solana_runtime::bank::Bank,
     solana_sdk::epoch_info::EpochInfo,
+    solana_stake_interface::stake_history::Epoch,
     std::{fmt::Debug, sync::Arc},
 };
 
@@ -87,13 +88,12 @@ fn fetch_vote_account_metas(bank: &Arc<Bank>, epoch: Epoch) -> Vec<VoteAccountMe
     bank.vote_accounts()
         .iter()
         .map(|(pubkey, (stake, vote_account))| {
-            let credits = vote_account
-                .vote_state()
-                .epoch_credits
-                .iter()
-                .find_map(|(credits_epoch, _, prev_credits)| {
-                    if *credits_epoch == epoch {
-                        Some(vote_account.vote_state().credits() - *prev_credits)
+            let vote_state_view = vote_account.vote_state_view();
+            let credits = vote_state_view
+                .epoch_credits_iter()
+                .find_map(|item| {
+                    if item.epoch() == epoch {
+                        Some(vote_state_view.credits() - item.prev_credits())
                     } else {
                         None
                     }
@@ -102,7 +102,7 @@ fn fetch_vote_account_metas(bank: &Arc<Bank>, epoch: Epoch) -> Vec<VoteAccountMe
 
             VoteAccountMeta {
                 vote_account: *pubkey,
-                commission: vote_account.vote_state().commission,
+                commission: vote_state_view.commission(),
                 stake: *stake,
                 credits,
             }
@@ -175,14 +175,34 @@ pub fn generate_validator_collection(bank: &Arc<Bank>) -> anyhow::Result<Validat
         })
         .collect::<Vec<_>>();
 
+    let total_validators = validator_metas.len();
+    let validators_with_credits = validator_metas.iter().filter(|v| v.credits > 0).count();
+    let total_credits: u64 = validator_metas.iter().map(|v| v.credits).sum();
+    let total_stake: u64 = validator_metas.iter().map(|v| v.stake).sum();
+
+    info!("Collected all vote account metas: {}", total_validators);
     info!(
-        "Collected all vote account metas: {}",
-        validator_metas.len()
+        "Validators with credits: {} / {}",
+        validators_with_credits, total_validators
+    );
+    info!("Total credits: {}", total_credits);
+    info!(
+        "Total stake: {} lamports ({:.2} SOL)",
+        total_stake,
+        lamports_to_sol(total_stake)
     );
     info!(
-        "Vote processors with some credits earned: {}",
-        validator_metas.iter().filter(|v| v.credits > 0).count()
+        "Validator rewards: {} lamports ({:.2} SOL)",
+        validator_rewards,
+        lamports_to_sol(validator_rewards)
     );
+
+    if total_credits == 0 {
+        anyhow::bail!(
+            "Total credits sum is 0 for epoch {}. This likely indicates a problem with the snapshot data.",
+            epoch
+        );
+    }
 
     validator_metas.sort();
     info!("Sorted vote account metas");
