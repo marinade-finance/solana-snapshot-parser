@@ -146,6 +146,10 @@ steps:
 
   - wait: ~
 
+  - block: ":hand: Review parsed snapshot before uploading"
+
+  - wait: ~
+
   - label: ":floppy_disk: :arrow_left: :cloud: Fetch past validator data"
     if: build.env("TEST_MODE") == null
     commands:
