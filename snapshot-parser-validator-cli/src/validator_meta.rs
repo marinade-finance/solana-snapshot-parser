@@ -191,7 +191,11 @@ pub fn generate_validator_collection(bank: &Arc<Bank>) -> anyhow::Result<Validat
         total_stake,
         lamports_to_sol(total_stake)
     );
-    info!("Validator rewards: {} lamports", validator_rewards);
+    info!(
+        "Validator rewards: {} lamports ({:.2} SOL)",
+        validator_rewards,
+        lamports_to_sol(validator_rewards)
+    );
 
     if total_credits == 0 {
         anyhow::bail!(
