@@ -11,9 +11,13 @@ log = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 shellexpand = { workspace = true }
+agave-snapshots = { workspace = true }
+solana-genesis-utils = { workspace = true }
 solana-ledger = { workspace = true }
+solana-native-token = { workspace = true }
 solana-program = { workspace = true }
 solana-runtime = { workspace = true }
 solana-sdk = { workspace = true }
 solana-accounts-db = { workspace = true }
+solana-stake-interface = { workspace = true }
 

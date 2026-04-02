@@ -128,6 +128,9 @@ steps:
     env:
       RUST_BACKTRACE: full
       # RUST_LOG: trace
+    artifact_paths:
+        - ./validators.json
+        - ./stakes.json
     commands:
     - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
     - buildkite-agent artifact download --include-retried-jobs target/release/snapshot-parser-validator-cli .
@@ -135,8 +138,11 @@ steps:
     - |
       ./target/release/snapshot-parser-validator-cli \
         --ledger-path "$$snapshot_dir" \
-        --output-validator-meta-collection "$$snapshot_dir/validators.json" \
-        --output-stake-meta-collection "$$snapshot_dir/stakes.json"
+        --output-validator-meta-collection "./validators.json" \
+        --output-stake-meta-collection "./stakes.json"
+    - |
+      cp ./validators.json "$$snapshot_dir/validators.json"
+      cp ./stakes.json "$$snapshot_dir/stakes.json"
 
   - wait: ~
 

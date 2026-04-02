@@ -5,9 +5,9 @@ use crate::processors::Processor;
 use crate::progress_bar::ProgressCounter;
 use crate::sql_params;
 use crate::stats::ProcessorCallback;
-use anchor_lang::AnchorDeserialize;
 use anyhow::anyhow;
 use async_trait::async_trait;
+use borsh::BorshDeserialize;
 use log::{debug, error, warn};
 use rusqlite::ToSql;
 use solana_accounts_db::accounts_index::ScanConfig;
@@ -90,10 +90,7 @@ impl ProcessorVeMnde {
         let vsr_voter_accounts = self.bank.get_filtered_program_accounts(
             &self.marinade_vsr_program_addr,
             |account_data| matches!(account_data.data().len(), VOTER_ACCOUNT_LEN),
-            &ScanConfig {
-                collect_all_unsorted: true,
-                ..ScanConfig::default()
-            },
+            &ScanConfig::default(),
         )?;
 
         debug!(

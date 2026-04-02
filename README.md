@@ -8,9 +8,9 @@ The following CLI packages are used:
   Parses the last slot snapshot of each epoch, generating information about validators and stakes.
 - **solana-parser-tokens-cli**: Used within [Solana Snapshot Manager](https://github.com/marinade-finance/solana-snapshot-manager) to retrieve mSOL data,
   typically running once per day.
-- **snapshot-parser-types**: A type library used in the [Validator Bonds](https://github.com/marinade-finance/validator-bonds) project.
-  It is intentionally kept outside the workspace due to dependency conflicts.  
-  You can build it separately with:
-  ```sh
-  cargo build --manifest-path=snapshot-parser-types/Cargo.toml
-  ```
+
+## Development notes
+
+This project uses `solana-ledger` APIs that are part of the Agave Unstable API.
+The `agave-unstable-api` feature is enabled on the `solana-ledger` crate in `Cargo.toml`.
+These interfaces may change or break without warning in future Agave releases.
