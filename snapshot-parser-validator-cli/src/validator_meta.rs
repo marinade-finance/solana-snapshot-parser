@@ -4,6 +4,7 @@ use {
     log::info,
     serde::{Deserialize, Serialize},
     snapshot_parser::serde_serialize::pubkey_string_conversion,
+    snapshot_parser::utils::lamports_to_sol,
     solana_program::pubkey::Pubkey,
     solana_runtime::bank::Bank,
     solana_sdk::epoch_info::EpochInfo,
@@ -174,14 +175,30 @@ pub fn generate_validator_collection(bank: &Arc<Bank>) -> anyhow::Result<Validat
         })
         .collect::<Vec<_>>();
 
+    let total_validators = validator_metas.len();
+    let validators_with_credits = validator_metas.iter().filter(|v| v.credits > 0).count();
+    let total_credits: u64 = validator_metas.iter().map(|v| v.credits).sum();
+    let total_stake: u64 = validator_metas.iter().map(|v| v.stake).sum();
+
+    info!("Collected all vote account metas: {}", total_validators);
     info!(
-        "Collected all vote account metas: {}",
-        validator_metas.len()
+        "Validators with credits: {} / {}",
+        validators_with_credits, total_validators
     );
+    info!("Total credits: {}", total_credits);
     info!(
-        "Vote processors with some credits earned: {}",
-        validator_metas.iter().filter(|v| v.credits > 0).count()
+        "Total stake: {} lamports ({:.2} SOL)",
+        total_stake,
+        lamports_to_sol(total_stake)
     );
+    info!("Validator rewards: {} lamports", validator_rewards);
+
+    if total_credits == 0 {
+        anyhow::bail!(
+            "Total credits sum is 0 for epoch {}. This likely indicates a problem with the snapshot data.",
+            epoch
+        );
+    }
 
     validator_metas.sort();
     info!("Sorted vote account metas");
