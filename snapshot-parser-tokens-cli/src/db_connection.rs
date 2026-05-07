@@ -178,7 +178,7 @@ impl SQLiteExecutor {
         self.db_temp_guard.promote(db_path)?;
         info!(
             "SQLite DB file promoted to: {:?} and finalized",
-            &self.db_path
+            self.db_path
         );
         Ok(())
     }

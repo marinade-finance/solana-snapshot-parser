@@ -33,7 +33,7 @@ fn main() -> anyhow::Result<()> {
     info!("Starting snapshot parser...");
     let args: Args = Args::parse();
 
-    info!("Creating bank from ledger path: {:?}", &args.ledger_path);
+    info!("Creating bank from ledger path: {:?}", args.ledger_path);
     let bank = create_bank_from_ledger(&args.ledger_path)?;
 
     let validator_meta_collection_handle = {
