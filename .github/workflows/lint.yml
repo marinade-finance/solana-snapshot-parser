@@ -1,4 +1,4 @@
-name: Cargo lint
+name: Cargo Lint
 permissions:
   contents: read
 
@@ -18,7 +18,7 @@ env:
   RUSTFLAGS: -C strip=symbols -C opt-level=s
 
 jobs:
-  lint:
+  cargo-lint:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -30,28 +30,16 @@ jobs:
           sudo apt-get update
           sudo apt-get -y install libudev-dev libclang-dev
 
-      - name: 👨‍🔧 Install Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
-        with:
-          node-version: 20
-
       - name: 🦿 Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: nightly
+          toolchain: 1.94.1
 
-      - name: 🧠 Cache Rust dependencies
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          shared-key: lint-and-test
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
-      - name: 🧭 Run cargo lint
+      - name: 🧭 Run cargo lint & clippy
         run: cargo fmt -- --check && cargo clippy -- -D warnings
