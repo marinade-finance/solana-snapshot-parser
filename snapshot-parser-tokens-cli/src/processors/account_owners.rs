@@ -67,9 +67,7 @@ impl ProcessorAccountOwners {
     pub async fn process(&mut self) -> anyhow::Result<()> {
         for pubkey in self.account_owners.clone() {
             debug!("Loading program {} account_owners from bank...", pubkey);
-            let transaction_accounts = self
-                .bank
-                .get_program_accounts(&pubkey)?;
+            let transaction_accounts = self.bank.get_program_accounts(&pubkey)?;
             debug!(
                 "Loaded program {} {} account_owners",
                 pubkey,

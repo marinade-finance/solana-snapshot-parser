@@ -75,9 +75,7 @@ impl ProcessorTokenMetadata {
             "Loading token metadata accounts for owner {} from bank...",
             metadata_id,
         );
-        let token_metadata_accounts = self
-            .bank
-            .get_program_accounts(&metadata_id)?;
+        let token_metadata_accounts = self.bank.get_program_accounts(&metadata_id)?;
 
         debug!(
             "Token metadata processor loaded {} accounts",

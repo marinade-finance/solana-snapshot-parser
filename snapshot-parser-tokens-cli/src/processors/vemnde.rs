@@ -86,10 +86,11 @@ impl ProcessorVeMnde {
     pub async fn process(&mut self) -> anyhow::Result<()> {
         debug!("Loading VSR registrar accounts from bank...");
 
-        let vsr_voter_accounts = self.bank.get_filtered_program_accounts(
-            &self.marinade_vsr_program_addr,
-            |account_data| matches!(account_data.data().len(), VOTER_ACCOUNT_LEN),
-        )?;
+        let vsr_voter_accounts = self
+            .bank
+            .get_filtered_program_accounts(&self.marinade_vsr_program_addr, |account_data| {
+                matches!(account_data.data().len(), VOTER_ACCOUNT_LEN)
+            })?;
 
         debug!(
             "VeMMNDE processor loaded {} Voter accounts",

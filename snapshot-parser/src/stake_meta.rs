@@ -64,8 +64,7 @@ pub fn generate_stake_meta_collection(bank: &Arc<Bank>) -> anyhow::Result<StakeM
     let history: StakeHistory = bincode::deserialize(&history_account.data)?;
     info!("Stake history loaded.");
 
-    let stake_accounts_raw =
-        bank.get_program_accounts(&solana_stake_interface::program::ID)?;
+    let stake_accounts_raw = bank.get_program_accounts(&solana_stake_interface::program::ID)?;
 
     info!("Stake processors loaded: {}", stake_accounts_raw.len());
 
