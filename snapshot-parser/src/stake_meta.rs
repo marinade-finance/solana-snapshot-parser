@@ -3,7 +3,6 @@ use {
     crate::utils::lamports_to_sol,
     log::{error, info},
     serde::{Deserialize, Serialize},
-    solana_accounts_db::accounts_index::ScanConfig,
     solana_program::pubkey::Pubkey,
     solana_runtime::bank::Bank,
     solana_sdk::{account::Account, epoch_info::EpochInfo},
@@ -66,7 +65,7 @@ pub fn generate_stake_meta_collection(bank: &Arc<Bank>) -> anyhow::Result<StakeM
     info!("Stake history loaded.");
 
     let stake_accounts_raw =
-        bank.get_program_accounts(&solana_stake_interface::program::ID, &ScanConfig::default())?;
+        bank.get_program_accounts(&solana_stake_interface::program::ID)?;
 
     info!("Stake processors loaded: {}", stake_accounts_raw.len());
 

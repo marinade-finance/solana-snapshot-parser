@@ -1,6 +1,5 @@
 use crate::utils::jito_parser::{get_epoch_created_at, read_jito_commission_and_epoch};
 use crate::utils::SliceAt;
-use solana_accounts_db::accounts_index::ScanConfig;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
 use {
@@ -30,7 +29,7 @@ pub fn fetch_jito_priority_fee_metas(
     epoch: Epoch,
 ) -> anyhow::Result<Vec<JitoPriorityFeeMeta>> {
     let jito_program: Pubkey = JITO_PRIORITY_FEE_DISTRIBUTION_PROGRAM.try_into()?;
-    let jito_accounts_raw = bank.get_program_accounts(&jito_program, &ScanConfig::default())?;
+    let jito_accounts_raw = bank.get_program_accounts(&jito_program)?;
     info!(
         "jito priority fee distribution program {} `raw` processors loaded: {}",
         JITO_PRIORITY_FEE_DISTRIBUTION_PROGRAM,

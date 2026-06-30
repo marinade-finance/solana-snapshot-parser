@@ -10,7 +10,6 @@ use async_trait::async_trait;
 use borsh::BorshDeserialize;
 use log::{debug, error, warn};
 use rusqlite::ToSql;
-use solana_accounts_db::accounts_index::ScanConfig;
 use solana_program::pubkey::Pubkey;
 use solana_runtime::bank::Bank;
 use solana_sdk::account::ReadableAccount;
@@ -90,7 +89,6 @@ impl ProcessorVeMnde {
         let vsr_voter_accounts = self.bank.get_filtered_program_accounts(
             &self.marinade_vsr_program_addr,
             |account_data| matches!(account_data.data().len(), VOTER_ACCOUNT_LEN),
-            &ScanConfig::default(),
         )?;
 
         debug!(

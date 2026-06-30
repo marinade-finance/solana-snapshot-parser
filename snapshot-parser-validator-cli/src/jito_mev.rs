@@ -1,7 +1,6 @@
 use crate::utils::jito_parser::{
     get_epoch_created_at, read_jito_commission_and_epoch, JitoCommissionMeta,
 };
-use solana_accounts_db::accounts_index::ScanConfig;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::Account;
 use {
@@ -22,7 +21,7 @@ const TIP_DISTRIBUTION_ACCOUNT_DISCRIMINATOR: [u8; 8] = [85, 64, 113, 198, 234, 
 
 pub fn fetch_jito_mev_metas(bank: &Arc<Bank>, epoch: Epoch) -> anyhow::Result<Vec<JitoMevMeta>> {
     let jito_program: Pubkey = JITO_PROGRAM.try_into()?;
-    let jito_accounts_raw = bank.get_program_accounts(&jito_program, &ScanConfig::default())?;
+    let jito_accounts_raw = bank.get_program_accounts(&jito_program)?;
     info!(
         "jito mev distribution program {} `raw` processors loaded: {}",
         JITO_PROGRAM,
