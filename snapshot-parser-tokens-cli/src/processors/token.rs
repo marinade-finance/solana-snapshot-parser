@@ -7,7 +7,6 @@ use crate::stats::ProcessorCallback;
 use async_trait::async_trait;
 use log::{debug, error};
 use rusqlite::ToSql;
-use solana_accounts_db::accounts_index::ScanConfig;
 use solana_program::program_error::ProgramError;
 use solana_program::program_pack::Pack;
 use solana_program::pubkey::Pubkey;
@@ -78,8 +77,10 @@ impl ProcessorToken {
             "Loading token accounts for {} mints from bank...",
             self.mints.len()
         );
+        // spl-token re-exports an older solana-pubkey major than the bank API
+        // expects, so bridge spl_token::ID through its raw bytes.
         let token_accounts = self.bank.get_filtered_program_accounts(
-            &spl_token::ID,
+            &Pubkey::from(spl_token::ID.to_bytes()),
             |account_data| match account_data.data().len() {
                 spl_token::state::Account::LEN => {
                     match spl_token::state::Account::unpack(account_data.data()) {
@@ -93,7 +94,6 @@ impl ProcessorToken {
                 }
                 _ => false,
             },
-            &ScanConfig::default(),
         )?;
 
         debug!("Token processor loaded {} accounts", token_accounts.len());

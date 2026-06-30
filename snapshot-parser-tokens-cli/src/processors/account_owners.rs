@@ -7,7 +7,6 @@ use crate::stats::ProcessorCallback;
 use async_trait::async_trait;
 use log::{debug, error};
 use rusqlite::ToSql;
-use solana_accounts_db::accounts_index::ScanConfig;
 use solana_program::pubkey::Pubkey;
 use solana_runtime::bank::Bank;
 use solana_sdk::account::{AccountSharedData, ReadableAccount};
@@ -68,9 +67,7 @@ impl ProcessorAccountOwners {
     pub async fn process(&mut self) -> anyhow::Result<()> {
         for pubkey in self.account_owners.clone() {
             debug!("Loading program {} account_owners from bank...", pubkey);
-            let transaction_accounts = self
-                .bank
-                .get_program_accounts(&pubkey, &ScanConfig::default())?;
+            let transaction_accounts = self.bank.get_program_accounts(&pubkey)?;
             debug!(
                 "Loaded program {} {} account_owners",
                 pubkey,

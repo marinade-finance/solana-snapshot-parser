@@ -7,7 +7,6 @@ use async_trait::async_trait;
 use log::{debug, error};
 use mpl_token_metadata::accounts::Metadata;
 use rusqlite::ToSql;
-use solana_accounts_db::accounts_index::ScanConfig;
 use solana_program::pubkey::Pubkey;
 use solana_runtime::bank::Bank;
 use solana_sdk::account::ReadableAccount;
@@ -76,9 +75,7 @@ impl ProcessorTokenMetadata {
             "Loading token metadata accounts for owner {} from bank...",
             metadata_id,
         );
-        let token_metadata_accounts = self
-            .bank
-            .get_program_accounts(&metadata_id, &ScanConfig::default())?;
+        let token_metadata_accounts = self.bank.get_program_accounts(&metadata_id)?;
 
         debug!(
             "Token metadata processor loaded {} accounts",
