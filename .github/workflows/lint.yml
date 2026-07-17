@@ -1,4 +1,4 @@
-name: Cargo Lint
+name: Cargo lint and test
 permissions:
   contents: read
 
@@ -18,12 +18,20 @@ env:
   RUSTFLAGS: -C strip=symbols -C opt-level=s
 
 jobs:
-  cargo-lint:
+  lint-and-test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 50
     steps:
-      - name: 🚧 Checkout project
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - name: 🛀🏼 Maximize build space
+        uses: AdityaGarg8/remove-unwanted-software@90e01b21170618765a73370fcc3abbd1684a7793 # v5
+        with:
+          remove-android: 'true'
+          remove-dotnet: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+
+      - name: 🏃‍♂️‍➡️ Checkout project
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: ⚙️ Install rust compilation dependencies
         run: |
@@ -34,12 +42,18 @@ jobs:
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: 1.94.1
+          components: rustfmt, clippy
 
-      - name: Cache Rust dependencies
+      - name: 🧠 Cache Rust dependencies
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           shared-key: lint-and-test
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
-      - name: 🧭 Run cargo lint & clippy
-        run: cargo fmt -- --check && cargo clippy -- -D warnings
+      - name: 🧭 Run lint
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: 🧨 Run test
+        run: cargo test --workspace --all-features

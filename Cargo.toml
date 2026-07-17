@@ -4,7 +4,7 @@ members = [
     "snapshot-parser-validator-cli",
     "snapshot-parser-tokens-cli",
 ]
-resolver = "1"
+resolver = "2"
 
 
 [profile.release]

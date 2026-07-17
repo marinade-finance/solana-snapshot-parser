@@ -131,6 +131,7 @@ steps:
     artifact_paths:
         - ./validators.json
         - ./stakes.json
+        - ./jito-stake-meta.json
     commands:
     - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
     - buildkite-agent artifact download --include-retried-jobs target/release/snapshot-parser-validator-cli .
@@ -139,10 +140,16 @@ steps:
       ./target/release/snapshot-parser-validator-cli \
         --ledger-path "$$snapshot_dir" \
         --output-validator-meta-collection "./validators.json" \
-        --output-stake-meta-collection "./stakes.json"
+        --output-stake-meta-collection "./stakes.json" \
+        --output-jito-stake-meta "./jito-stake-meta.json"
     - |
       cp ./validators.json "$$snapshot_dir/validators.json"
       cp ./stakes.json "$$snapshot_dir/stakes.json"
+      if [[ -f ./jito-stake-meta.json ]]; then
+        cp ./jito-stake-meta.json "$$snapshot_dir/jito-stake-meta.json"
+      else
+        echo "Jito stake meta collection was not produced!" | buildkite-agent annotate --style warning --context "jito-stake-meta"
+      fi
 
   - wait: ~
 
@@ -161,6 +168,12 @@ steps:
     - epoch=$(buildkite-agent meta-data get epoch)
     - gcloud storage cp "$$snapshot_dir/validators.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
     - gcloud storage cp "$$snapshot_dir/stakes.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
+    - |
+      if [[ -f "$$snapshot_dir/jito-stake-meta.json" ]]; then
+        gcloud storage cp "$$snapshot_dir/jito-stake-meta.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
+      else
+        echo "Jito stake meta collection was not produced!"
+      fi
 
   - wait: ~
 

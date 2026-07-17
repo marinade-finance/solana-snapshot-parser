@@ -1,1 +1,6 @@
 large-error-threshold = 1000
+
+disallowed-methods = [
+    { path = "solana_stake_interface::state::Delegation::stake_activating_and_deactivating", reason = "use snapshot_parser::stake_activation::StakeActivation, which sources the warmup/cooldown rate from the bank" },
+    { path = "solana_stake_interface::state::Delegation::stake", reason = "use snapshot_parser::stake_activation::StakeActivation, which sources the warmup/cooldown rate from the bank" },
+]

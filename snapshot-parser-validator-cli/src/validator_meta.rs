@@ -7,7 +7,7 @@ use {
     snapshot_parser::utils::lamports_to_sol,
     solana_program::pubkey::Pubkey,
     solana_runtime::bank::Bank,
-    solana_sdk::epoch_info::EpochInfo,
+    solana_sdk::{account::AccountSharedData, epoch_info::EpochInfo},
     solana_stake_interface::stake_history::Epoch,
     std::{fmt::Debug, sync::Arc},
 };
@@ -110,7 +110,11 @@ fn fetch_vote_account_metas(bank: &Arc<Bank>, epoch: Epoch) -> Vec<VoteAccountMe
         .collect()
 }
 
-pub fn generate_validator_collection(bank: &Arc<Bank>) -> anyhow::Result<ValidatorMetaCollection> {
+pub fn generate_validator_collection(
+    bank: &Arc<Bank>,
+    tip_distribution_accounts: &[(Pubkey, AccountSharedData)],
+    priority_fee_distribution_accounts: &[(Pubkey, AccountSharedData)],
+) -> anyhow::Result<ValidatorMetaCollection> {
     assert!(bank.is_frozen());
 
     let EpochInfo {
@@ -128,8 +132,9 @@ pub fn generate_validator_collection(bank: &Arc<Bank>) -> anyhow::Result<Validat
         (validator_rate * capitalization as f64 * epoch_duration_in_years) as u64;
 
     let vote_account_metas = fetch_vote_account_metas(bank, epoch);
-    let jito_mev_metas = fetch_jito_mev_metas(bank, epoch)?;
-    let jito_priority_fee_metas = fetch_jito_priority_fee_metas(bank, epoch)?;
+    let jito_mev_metas = fetch_jito_mev_metas(tip_distribution_accounts, epoch)?;
+    let jito_priority_fee_metas =
+        fetch_jito_priority_fee_metas(priority_fee_distribution_accounts, epoch)?;
 
     let mut validator_metas = vote_account_metas
         .into_iter()

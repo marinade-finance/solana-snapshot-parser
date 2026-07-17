@@ -2,11 +2,8 @@ use crate::utils::jito_parser::{
     get_epoch_created_at, read_jito_commission_and_epoch, JitoCommissionMeta,
 };
 use solana_program::pubkey::Pubkey;
-use solana_sdk::account::Account;
-use {
-    log::info, solana_runtime::bank::Bank, solana_stake_interface::stake_history::Epoch,
-    std::sync::Arc,
-};
+use solana_sdk::account::{AccountSharedData, ReadableAccount};
+use {log::info, solana_stake_interface::stake_history::Epoch};
 
 pub struct JitoMevMeta {
     pub vote_account: Pubkey,
@@ -16,24 +13,22 @@ pub struct JitoMevMeta {
 // https://github.com/jito-foundation/jito-programs/blob/v0.1.5/mev-programs/programs/tip-distribution/src/state.rs#L32
 // only one TipDistribution account per epoch
 // https://github.com/jito-foundation/jito-programs/blob/v0.1.5/mev-programs/programs/tip-distribution/src/lib.rs#L385
-const JITO_PROGRAM: &str = "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7";
-const TIP_DISTRIBUTION_ACCOUNT_DISCRIMINATOR: [u8; 8] = [85, 64, 113, 198, 234, 94, 120, 123];
+pub(crate) const JITO_PROGRAM: &str = "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7";
+pub(crate) const TIP_DISTRIBUTION_ACCOUNT_DISCRIMINATOR: [u8; 8] =
+    [85, 64, 113, 198, 234, 94, 120, 123];
 
-pub fn fetch_jito_mev_metas(bank: &Arc<Bank>, epoch: Epoch) -> anyhow::Result<Vec<JitoMevMeta>> {
-    let jito_program: Pubkey = JITO_PROGRAM.try_into()?;
-    let jito_accounts_raw = bank.get_program_accounts(&jito_program)?;
-    info!(
-        "jito mev distribution program {} `raw` processors loaded: {}",
-        JITO_PROGRAM,
-        jito_accounts_raw.len()
-    );
-
+pub fn fetch_jito_mev_metas(
+    tip_distribution_accounts: &[(Pubkey, AccountSharedData)],
+    epoch: Epoch,
+) -> anyhow::Result<Vec<JitoMevMeta>> {
     let mut jito_mev_metas: Vec<JitoMevMeta> = Vec::new();
 
-    for (pubkey, shared_account) in jito_accounts_raw {
-        let account = Account::from(shared_account);
-        if account.data[0..8] == TIP_DISTRIBUTION_ACCOUNT_DISCRIMINATOR {
-            update_jito_mev_metas(&mut jito_mev_metas, &account, pubkey, epoch)?;
+    for (pubkey, account) in tip_distribution_accounts {
+        if account
+            .data()
+            .starts_with(&TIP_DISTRIBUTION_ACCOUNT_DISCRIMINATOR)
+        {
+            update_jito_mev_metas(&mut jito_mev_metas, account, *pubkey, epoch)?;
         }
     }
 
@@ -53,7 +48,7 @@ pub fn fetch_jito_mev_metas(bank: &Arc<Bank>, epoch: Epoch) -> anyhow::Result<Ve
 
 fn update_jito_mev_metas(
     jito_mev_metas: &mut Vec<JitoMevMeta>,
-    account: &Account,
+    account: &impl ReadableAccount,
     pubkey: Pubkey,
     epoch: Epoch,
 ) -> anyhow::Result<()> {
@@ -66,7 +61,7 @@ fn update_jito_mev_metas(
 
 fn update_mev_commission(
     jito_mev_metas: &mut Vec<JitoMevMeta>,
-    account: &Account,
+    account: &impl ReadableAccount,
     account_pubkey: Pubkey,
     epoch_byte_index: usize,
     epoch: Epoch,
