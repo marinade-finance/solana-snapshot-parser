@@ -32,6 +32,9 @@ jobs:
 
       - name: 🏃‍♂️‍➡️ Checkout project
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # cargo build scripts and proc macros run PR code and could read a persisted git token
+          persist-credentials: false
 
       - name: ⚙️ Install rust compilation dependencies
         run: |
