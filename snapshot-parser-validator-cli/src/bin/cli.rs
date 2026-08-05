@@ -1,7 +1,7 @@
 use env_logger::{Builder, Env};
 use log::LevelFilter;
 use snapshot_parser::stake_meta;
-use snapshot_parser::utils::{write_to_json_file, write_to_json_file_compact};
+use snapshot_parser::utils::write_to_json_file;
 use snapshot_parser_validator_cli::scanned_accounts::scan_required_accounts;
 use snapshot_parser_validator_cli::{jito_stake_meta, validator_meta};
 use std::thread::spawn;
@@ -113,8 +113,8 @@ fn main() -> anyhow::Result<()> {
                         &tip_distribution,
                         &priority_fee_distribution,
                     )?;
-                // Jito publishes the collection compacted; the document is too big to be held as a String
-                write_to_json_file_compact(&jito_stake_meta_collection, &output_path)?;
+                // Jito publishes this collection pretty-printed; parity is checked byte for byte
+                write_to_json_file(&jito_stake_meta_collection, &output_path)?;
                 info!("Jito stake meta collection finished.");
                 Ok(())
             };

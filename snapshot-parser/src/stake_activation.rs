@@ -5,7 +5,6 @@ use {
         stake_history::{Epoch, StakeHistory, StakeHistoryEntry},
         state::Delegation,
     },
-    std::sync::Arc,
 };
 
 // Owns the warmup/cooldown rate so no caller can pass one and re-pin the pre-activation 25% rate
@@ -16,7 +15,7 @@ pub struct StakeActivation {
 }
 
 impl StakeActivation {
-    pub fn new(bank: &Arc<Bank>) -> anyhow::Result<Self> {
+    pub fn new(bank: &Bank) -> anyhow::Result<Self> {
         let history_account = bank
             .get_account(&solana_stake_interface::sysvar::stake_history::ID)
             .ok_or_else(|| anyhow::anyhow!("Failed to fetch the stake history sysvar"))?;
@@ -53,7 +52,10 @@ impl StakeActivation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use solana_runtime::genesis_utils::{create_genesis_config, GenesisConfigInfo};
+    use {
+        solana_runtime::genesis_utils::{create_genesis_config, GenesisConfigInfo},
+        std::sync::Arc,
+    };
 
     #[test]
     fn rate_comes_from_the_bank_and_is_never_none() {

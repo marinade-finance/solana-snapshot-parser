@@ -46,14 +46,6 @@ pub fn write_to_json_file<T: Serialize>(data: &T, out_path: &str) -> anyhow::Res
     })
 }
 
-pub fn write_to_json_file_compact<T: Serialize>(data: &T, out_path: &str) -> anyhow::Result<()> {
-    write_atomic(out_path, |writer| {
-        serde_json::to_writer(writer, data)?;
-
-        Ok(())
-    })
-}
-
 pub fn read_from_json_file<P: AsRef<Path>, T: DeserializeOwned>(in_path: &P) -> anyhow::Result<T> {
     let file = File::open(in_path)?;
     let reader = BufReader::new(file);
@@ -108,21 +100,25 @@ mod tests {
     fn writers_leave_no_temporary_file_behind() {
         let data = json!({"epoch": 1002});
         let out = OutDir::new("no-tmp");
-        write_to_json_file_compact(&data, &out.path()).unwrap();
+        write_to_json_file(&data, &out.path()).unwrap();
 
-        assert_eq!(fs::read_to_string(out.path()).unwrap(), r#"{"epoch":1002}"#);
+        assert_eq!(
+            fs::read_to_string(out.path()).unwrap(),
+            serde_json::to_string_pretty(&data).unwrap()
+        );
         assert!(!Path::new(&format!("{}.tmp", out.path())).exists());
     }
 
     #[test]
     fn a_failing_serialization_leaves_the_destination_untouched() {
+        let complete = json!({"complete": true});
         let out = OutDir::new("preserved");
-        write_to_json_file_compact(&json!({"complete": true}), &out.path()).unwrap();
+        write_to_json_file(&complete, &out.path()).unwrap();
 
-        assert!(write_to_json_file_compact(&NonSerializable, &out.path()).is_err());
+        assert!(write_to_json_file(&NonSerializable, &out.path()).is_err());
         assert_eq!(
             fs::read_to_string(out.path()).unwrap(),
-            r#"{"complete":true}"#,
+            serde_json::to_string_pretty(&complete).unwrap(),
             "a failed write must not clobber the previous complete file"
         );
         assert!(!Path::new(&format!("{}.tmp", out.path())).exists());
