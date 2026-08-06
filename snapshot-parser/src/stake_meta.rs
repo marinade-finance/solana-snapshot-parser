@@ -1,13 +1,17 @@
 use {
     crate::serde_serialize::{option_pubkey_string_conversion, pubkey_string_conversion},
+    crate::stake_activation::StakeActivation,
     crate::utils::lamports_to_sol,
     log::{error, info},
     serde::{Deserialize, Serialize},
     solana_program::pubkey::Pubkey,
     solana_runtime::bank::Bank,
-    solana_sdk::{account::Account, epoch_info::EpochInfo},
+    solana_sdk::{
+        account::{AccountSharedData, ReadableAccount},
+        epoch_info::EpochInfo,
+    },
     solana_stake_interface::{
-        stake_history::{Epoch, StakeHistory, StakeHistoryEntry},
+        stake_history::{Epoch, StakeHistoryEntry},
         state::StakeStateV2,
     },
     std::{fmt::Debug, sync::Arc},
@@ -48,31 +52,34 @@ pub struct StakeMetaCollection {
     pub stake_metas: Vec<StakeMeta>,
 }
 
+fn load_stake_accounts(bank: &Arc<Bank>) -> anyhow::Result<Vec<(Pubkey, AccountSharedData)>> {
+    let stake_accounts_raw = bank.get_program_accounts(&solana_stake_interface::program::ID)?;
+    info!("Stake processors loaded: {}", stake_accounts_raw.len());
+
+    Ok(stake_accounts_raw)
+}
+
 pub fn generate_stake_meta_collection(bank: &Arc<Bank>) -> anyhow::Result<StakeMetaCollection> {
+    generate_stake_meta_collection_for_accounts(bank, &load_stake_accounts(bank)?)
+}
+
+pub fn generate_stake_meta_collection_for_accounts(
+    bank: &Arc<Bank>,
+    stake_accounts: &[(Pubkey, AccountSharedData)],
+) -> anyhow::Result<StakeMetaCollection> {
     assert!(bank.is_frozen());
 
-    let EpochInfo {
-        epoch,
-        absolute_slot,
-        ..
-    } = bank.get_epoch_info();
+    let EpochInfo { absolute_slot, .. } = bank.get_epoch_info();
 
-    let history_account = Account::from(
-        bank.get_account(&solana_stake_interface::sysvar::stake_history::ID)
-            .expect("Failed to fetch the stake history"),
-    );
-    let history: StakeHistory = bincode::deserialize(&history_account.data)?;
+    let stake_activation = StakeActivation::new(bank)?;
+    let epoch = stake_activation.epoch();
     info!("Stake history loaded.");
-
-    let stake_accounts_raw = bank.get_program_accounts(&solana_stake_interface::program::ID)?;
-
-    info!("Stake processors loaded: {}", stake_accounts_raw.len());
 
     let mut stake_metas: Vec<StakeMeta> = Default::default();
 
-    for (pubkey, shared_account) in stake_accounts_raw {
-        let account = Account::from(shared_account);
-        let stake_account: StakeStateV2 = match bincode::deserialize(&account.data) {
+    for (pubkey, shared_account) in stake_accounts {
+        let pubkey = *pubkey;
+        let stake_account: StakeStateV2 = match bincode::deserialize(shared_account.data()) {
             Ok(account) => account,
             Err(err) => {
                 error!("Error parsing stake account {}: {}", pubkey, err);
@@ -91,9 +98,7 @@ pub fn generate_stake_meta_collection(bank: &Arc<Bank>) -> anyhow::Result<StakeM
                     effective,
                     activating,
                     deactivating,
-                } = stake
-                    .delegation
-                    .stake_activating_and_deactivating(epoch, &history, None);
+                } = stake_activation.status(&stake.delegation);
                 (
                     Some(stake.delegation.voter_pubkey),
                     effective,
@@ -106,7 +111,7 @@ pub fn generate_stake_meta_collection(bank: &Arc<Bank>) -> anyhow::Result<StakeM
 
         stake_metas.push(StakeMeta {
             pubkey,
-            balance_lamports: account.lamports,
+            balance_lamports: shared_account.lamports(),
             active_delegation_lamports,
             activating_delegation_lamports,
             deactivating_delegation_lamports,
@@ -120,6 +125,12 @@ pub fn generate_stake_meta_collection(bank: &Arc<Bank>) -> anyhow::Result<StakeM
         })
     }
     info!("Collected all stake account metas: {}", stake_metas.len());
+
+    if stake_metas.is_empty() {
+        anyhow::bail!(
+            "Not expected. No stake metas collected for epoch {epoch}. Evaluate the snapshot data."
+        );
+    }
 
     let total_active: u64 = stake_metas
         .iter()

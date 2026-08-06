@@ -1,11 +1,8 @@
 use crate::utils::jito_parser::{get_epoch_created_at, read_jito_commission_and_epoch};
 use crate::utils::SliceAt;
 use solana_program::pubkey::Pubkey;
-use solana_sdk::account::Account;
-use {
-    log::info, solana_runtime::bank::Bank, solana_stake_interface::stake_history::Epoch,
-    std::sync::Arc,
-};
+use solana_sdk::account::{AccountSharedData, ReadableAccount};
+use {log::info, solana_stake_interface::stake_history::Epoch};
 
 pub struct JitoPriorityFeeMeta {
     pub validator_vote_account: Pubkey,
@@ -19,29 +16,24 @@ pub struct JitoPriorityFeeMeta {
 // A new account is created for each epoch for every validator.
 // * https://www.jito.network/blog/tiprouter-upgrade-facilitating-priority-fees/
 // * https://www.notion.so/marinade/Account-for-Jito-Tip-Distribution-Collect-1-4-22ae465715a480daa33ae55d5b92ba52
-const JITO_PRIORITY_FEE_DISTRIBUTION_PROGRAM: &str = "Priority6weCZ5HwDn29NxLFpb7TDp2iLZ6XKc5e8d3";
-const PRIORITY_FEE_DISTRIBUTION_ACCOUNT_DISCRIMINATOR: [u8; 8] =
+pub(crate) const JITO_PRIORITY_FEE_DISTRIBUTION_PROGRAM: &str =
+    "Priority6weCZ5HwDn29NxLFpb7TDp2iLZ6XKc5e8d3";
+pub(crate) const PRIORITY_FEE_DISTRIBUTION_ACCOUNT_DISCRIMINATOR: [u8; 8] =
     [163, 183, 254, 12, 121, 137, 235, 27];
 const TOTAL_LAMPORTS_TRASFERRED_BYTE_OFFSET: usize = 8 + 2 + 8; // epoch + commission + expires_at
 
 pub fn fetch_jito_priority_fee_metas(
-    bank: &Arc<Bank>,
+    priority_fee_distribution_accounts: &[(Pubkey, AccountSharedData)],
     epoch: Epoch,
 ) -> anyhow::Result<Vec<JitoPriorityFeeMeta>> {
-    let jito_program: Pubkey = JITO_PRIORITY_FEE_DISTRIBUTION_PROGRAM.try_into()?;
-    let jito_accounts_raw = bank.get_program_accounts(&jito_program)?;
-    info!(
-        "jito priority fee distribution program {} `raw` processors loaded: {}",
-        JITO_PRIORITY_FEE_DISTRIBUTION_PROGRAM,
-        jito_accounts_raw.len()
-    );
-
     let mut jito_priority_fee_metas: Vec<JitoPriorityFeeMeta> = Vec::new();
 
-    for (pubkey, shared_account) in jito_accounts_raw {
-        let account = Account::from(shared_account);
-        if account.data[0..8] == PRIORITY_FEE_DISTRIBUTION_ACCOUNT_DISCRIMINATOR {
-            update_jito_priority_fee_metas(&mut jito_priority_fee_metas, &account, pubkey, epoch)?;
+    for (pubkey, account) in priority_fee_distribution_accounts {
+        if account
+            .data()
+            .starts_with(&PRIORITY_FEE_DISTRIBUTION_ACCOUNT_DISCRIMINATOR)
+        {
+            update_jito_priority_fee_metas(&mut jito_priority_fee_metas, account, *pubkey, epoch)?;
         }
     }
 
@@ -61,7 +53,7 @@ pub fn fetch_jito_priority_fee_metas(
 
 fn update_jito_priority_fee_metas(
     jito_priority_fee_metas: &mut Vec<JitoPriorityFeeMeta>,
-    account: &Account,
+    account: &impl ReadableAccount,
     pubkey: Pubkey,
     epoch: Epoch,
 ) -> anyhow::Result<()> {
@@ -82,14 +74,14 @@ fn update_jito_priority_fee_metas(
 
 fn read_priority_fee_total_lamports_transferred(
     account_pubkey: Pubkey,
-    account: &Account,
+    account: &impl ReadableAccount,
     end_merkle_root_byte_index: usize, // a byte index directly after MerkleRoot struct
 ) -> anyhow::Result<u64> {
     let total_lamports_transferred_byte_index =
         end_merkle_root_byte_index + TOTAL_LAMPORTS_TRASFERRED_BYTE_OFFSET;
     let total_lamports_transferred = u64::from_le_bytes(
         account
-            .data
+            .data()
             .slice_at(total_lamports_transferred_byte_index, 8)?
             .try_into()
             .map_err(|e| {
