@@ -3,6 +3,7 @@ name = "snapshot-parser-validator-cli"
 path = "src/bin/cli.rs"
 
 [package]
+publish = false
 name = "snapshot-parser-validator-cli"
 version = "0.0.0"
 edition = "2021"
