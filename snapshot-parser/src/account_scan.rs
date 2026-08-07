@@ -7,8 +7,13 @@ use {
     std::{
         collections::{HashMap, HashSet},
         sync::Arc,
+        time::{Duration, Instant},
     },
 };
+
+const PROGRESS_REPORT_EVERY: Duration = Duration::from_secs(60);
+// reading the clock per account would cost minutes over a half-billion-entry index
+const PROGRESS_CLOCK_EVERY_ENTRIES: u64 = 1_000_000;
 
 // get_program_accounts is a full accounts-index scan per call, so one call per owner costs N passes
 pub fn scan_accounts_by_owner(
@@ -19,7 +24,26 @@ pub fn scan_accounts_by_owner(
     let mut collected: HashMap<Pubkey, Vec<(Pubkey, AccountSharedData)>> =
         wanted.iter().map(|owner| (*owner, Vec::new())).collect();
 
+    let started = Instant::now();
+    let mut reported_at = started;
+    let mut visited: u64 = 0;
+
     bank.scan_all_accounts(|maybe_account| {
+        visited += 1;
+        if visited.is_multiple_of(PROGRESS_CLOCK_EVERY_ENTRIES) {
+            let now = Instant::now();
+            if now.duration_since(reported_at) >= PROGRESS_REPORT_EVERY {
+                reported_at = now;
+                let elapsed = now.duration_since(started).as_secs_f64();
+                info!(
+                    "Account scan progress: {} index entries in {:.0}s ({:.0} entries/s), {} accounts collected",
+                    visited,
+                    elapsed,
+                    visited as f64 / elapsed,
+                    collected.values().map(Vec::len).sum::<usize>()
+                );
+            }
+        }
         let Some((pubkey, account, _slot)) = maybe_account else {
             return;
         };
@@ -32,6 +56,11 @@ pub fn scan_accounts_by_owner(
         }
     })?;
 
+    info!(
+        "Account scan finished: {} index entries in {:.0}s",
+        visited,
+        started.elapsed().as_secs_f64()
+    );
     for (owner, accounts) in &collected {
         info!("Accounts scanned for owner {}: {}", owner, accounts.len());
     }
