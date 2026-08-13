@@ -5,6 +5,8 @@ env:
   GCLOUD_SNAPSHOTS: "gs://marinade-solana-snapshot-testnet"
   LOCAL_SNAPSHOTS: "/mnt/snapshots-storage/snapshots-testnet"
   WORKING_DIR: "/mnt/storage-1/snapshots"
+  # Testnet genesis: fetch-genesis.bash defaults to mainnet RPC otherwise.
+  RPC_URL: "https://api.testnet.solana.com"
   slack_api: "https://slack.com/api/chat.postMessage"
   slack_feed: "feed-snapshot-testnet"
 
