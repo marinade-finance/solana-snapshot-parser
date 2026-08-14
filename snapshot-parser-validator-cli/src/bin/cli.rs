@@ -60,8 +60,11 @@ fn main() -> anyhow::Result<()> {
     let bank = create_bank_from_ledger(&args.ledger_path)?;
 
     info!("Scanning accounts from the bank...");
-    let scanned_accounts =
-        scan_required_accounts(&bank, args.verify_account_scan, args.tip_distribution_program)?;
+    let scanned_accounts = scan_required_accounts(
+        &bank,
+        args.verify_account_scan,
+        args.tip_distribution_program,
+    )?;
 
     let validator_meta_collection_handle = {
         let bank = bank.clone();
