@@ -1,4 +1,4 @@
-use crate::jito_mev::{JITO_PROGRAM, TIP_DISTRIBUTION_ACCOUNT_DISCRIMINATOR};
+use crate::jito_mev::TIP_DISTRIBUTION_ACCOUNT_DISCRIMINATOR;
 use crate::jito_priority_fee::{
     JITO_PRIORITY_FEE_DISTRIBUTION_PROGRAM, PRIORITY_FEE_DISTRIBUTION_ACCOUNT_DISCRIMINATOR,
 };
@@ -20,7 +20,7 @@ use {
 
 // Replicates jito-tip-router/tip-router-operator-cli/src/stake_meta_generator.rs
 
-const JITO_TIP_PAYMENT_PROGRAM: &str = "T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt";
+pub const JITO_TIP_PAYMENT_PROGRAM: &str = "T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt";
 const CONFIG_ACCOUNT_SEED: &[u8] = b"CONFIG_ACCOUNT";
 const TIP_ACCOUNT_SEEDS: [&[u8]; 8] = [
     b"TIP_ACCOUNT_0",
@@ -141,6 +141,8 @@ pub fn generate_jito_stake_meta_collection(
     stake_accounts: &[(Pubkey, AccountSharedData)],
     tip_distribution_accounts: &[(Pubkey, AccountSharedData)],
     priority_fee_distribution_accounts: &[(Pubkey, AccountSharedData)],
+    tip_distribution_program: Pubkey,
+    tip_payment_program: Pubkey,
 ) -> anyhow::Result<JitoStakeMetaCollection> {
     assert!(bank.is_frozen());
     let epoch = bank.epoch();
@@ -183,7 +185,8 @@ pub fn generate_jito_stake_meta_collection(
         priority_fee_distribution_metas.len()
     );
 
-    let (tip_receiver, tip_receiver_fee) = read_undistributed_tip_receiver_fee(bank)?;
+    let (tip_receiver, tip_receiver_fee) =
+        read_undistributed_tip_receiver_fee(bank, tip_payment_program)?;
 
     let epoch_vote_accounts = bank
         .epoch_vote_accounts(epoch)
@@ -273,7 +276,7 @@ pub fn generate_jito_stake_meta_collection(
 
     Ok(JitoStakeMetaCollection {
         stake_metas,
-        tip_distribution_program_id: JITO_PROGRAM.try_into()?,
+        tip_distribution_program_id: tip_distribution_program,
         priority_fee_distribution_program_id: JITO_PRIORITY_FEE_DISTRIBUTION_PROGRAM.try_into()?,
         bank_hash: bank.hash().to_string(),
         epoch,
@@ -365,8 +368,10 @@ fn distribution_account_metas(
 }
 
 // Tips left in the tip payment PDAs are cranked to the configured tip receiver in the next epoch
-fn read_undistributed_tip_receiver_fee(bank: &Arc<Bank>) -> anyhow::Result<(Pubkey, u64)> {
-    let tip_payment_program: Pubkey = JITO_TIP_PAYMENT_PROGRAM.try_into()?;
+fn read_undistributed_tip_receiver_fee(
+    bank: &Arc<Bank>,
+    tip_payment_program: Pubkey,
+) -> anyhow::Result<(Pubkey, u64)> {
     let (config_pubkey, _) =
         Pubkey::find_program_address(&[CONFIG_ACCOUNT_SEED], &tip_payment_program);
     let config_account = bank.get_account(&config_pubkey).ok_or_else(|| {
@@ -439,6 +444,7 @@ fn parse_tip_payment_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::jito_mev::JITO_PROGRAM;
     use solana_sdk::account::Account;
 
     fn config_account(tip_receiver: Pubkey, block_builder: Pubkey, commission_pct: u64) -> Account {

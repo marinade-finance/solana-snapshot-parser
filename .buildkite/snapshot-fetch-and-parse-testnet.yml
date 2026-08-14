@@ -4,8 +4,12 @@ agents:
 env:
   GCLOUD_SNAPSHOTS: "gs://marinade-solana-snapshot-testnet"
   LOCAL_SNAPSHOTS: "/mnt/snapshots-storage/snapshots-testnet"
-  WORKING_DIR: "/mnt/storage-1/snapshots"
-  # Testnet genesis: fetch-genesis.bash defaults to mainnet RPC otherwise.
+  # Distinct from the mainnet pipeline's WORKING_DIR so concurrent runs cannot
+  # collide. Note: nothing prunes this dir on failed builds; orphaned temp
+  # snapshot dirs from crashed runs need separate cleanup.
+  WORKING_DIR: "/mnt/storage-1/snapshots-testnet"
+  # Testnet genesis: passed positionally to fetch-genesis.bash (which otherwise
+  # defaults to mainnet RPC).
   RPC_URL: "https://api.testnet.solana.com"
   slack_api: "https://slack.com/api/chat.postMessage"
   slack_feed: "feed-snapshot-testnet"
@@ -86,7 +90,6 @@ steps:
       mkdir -p $$WORKING_DIR
       snapshot_dir=$(mktemp --directory -p "$$WORKING_DIR" "snapshot-$$epoch-$(date +%s)-XXXXXX")
 
-      # Check if snapshot already exists in local storage
       local_snapshot=$(find $$local_snapshot_dir/*/$$epoch/ -name 'snapshot-*.tar.zst' 2>/dev/null | head -1)
       if [[ -n "$$local_snapshot" ]]; then
         echo "Found local snapshot at: $$local_snapshot"
@@ -103,7 +106,7 @@ steps:
   - label: ":cloud: :arrow_right: :floppy_disk: Fetch genesis"
     commands:
     - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
-    - ./scripts/fetch-genesis.bash "$$snapshot_dir"
+    - ./scripts/fetch-genesis.bash "$$snapshot_dir" "$RPC_URL"
 
   - label: ":cloud: :arrow_right: :floppy_disk: Fetch snapshot"
     commands:
@@ -143,7 +146,9 @@ steps:
         --ledger-path "$$snapshot_dir" \
         --output-validator-meta-collection "./validators.json" \
         --output-stake-meta-collection "./stakes.json" \
-        --output-jito-stake-meta "./jito-stake-meta.json"
+        --output-jito-stake-meta "./jito-stake-meta.json" \
+        --tip-distribution-program "DzvGET57TAgEDxvm3ERUM4GNcsAJdqjDLCne9sdfY4wf" \
+        --tip-payment-program "GJHtFqM9agxPmkeKjHny6qiRKrXZALvvFGiKf11QE7hy"
     - |
       cp ./validators.json "$$snapshot_dir/validators.json"
       cp ./stakes.json "$$snapshot_dir/stakes.json"

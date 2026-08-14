@@ -2,8 +2,11 @@ use env_logger::{Builder, Env};
 use log::LevelFilter;
 use snapshot_parser::stake_meta;
 use snapshot_parser::utils::write_to_json_file;
+use snapshot_parser_validator_cli::jito_mev::JITO_PROGRAM;
+use snapshot_parser_validator_cli::jito_stake_meta::JITO_TIP_PAYMENT_PROGRAM;
 use snapshot_parser_validator_cli::scanned_accounts::scan_required_accounts;
 use snapshot_parser_validator_cli::{jito_stake_meta, validator_meta};
+use solana_program::pubkey::Pubkey;
 use std::thread::spawn;
 use {
     clap::Parser,
@@ -35,6 +38,14 @@ struct Args {
     /// Cross-check the single-pass account scan against get_program_accounts; costs a scan per owner
     #[arg(long, env, default_value_t = false)]
     verify_account_scan: bool,
+
+    /// Jito tip-distribution program id (defaults to mainnet); override for other clusters
+    #[arg(long, env, default_value = JITO_PROGRAM)]
+    tip_distribution_program: Pubkey,
+
+    /// Jito tip-payment program id (defaults to mainnet); override for other clusters
+    #[arg(long, env, default_value = JITO_TIP_PAYMENT_PROGRAM)]
+    tip_payment_program: Pubkey,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -49,7 +60,8 @@ fn main() -> anyhow::Result<()> {
     let bank = create_bank_from_ledger(&args.ledger_path)?;
 
     info!("Scanning accounts from the bank...");
-    let scanned_accounts = scan_required_accounts(&bank, args.verify_account_scan)?;
+    let scanned_accounts =
+        scan_required_accounts(&bank, args.verify_account_scan, args.tip_distribution_program)?;
 
     let validator_meta_collection_handle = {
         let bank = bank.clone();
@@ -97,6 +109,8 @@ fn main() -> anyhow::Result<()> {
         })
     };
 
+    let tip_distribution_program = args.tip_distribution_program;
+    let tip_payment_program = args.tip_payment_program;
     let jito_stake_meta_collection_handle = args.output_jito_stake_meta.map(|output_path| {
         let bank = bank.clone();
         let stake_accounts = scanned_accounts.stake.clone();
@@ -112,6 +126,8 @@ fn main() -> anyhow::Result<()> {
                         &stake_accounts,
                         &tip_distribution,
                         &priority_fee_distribution,
+                        tip_distribution_program,
+                        tip_payment_program,
                     )?;
                 // Jito publishes this collection pretty-printed; parity is checked byte for byte
                 write_to_json_file(&jito_stake_meta_collection, &output_path)?;

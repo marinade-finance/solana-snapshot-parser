@@ -13,7 +13,7 @@ pub struct JitoMevMeta {
 // https://github.com/jito-foundation/jito-programs/blob/v0.1.5/mev-programs/programs/tip-distribution/src/state.rs#L32
 // only one TipDistribution account per epoch
 // https://github.com/jito-foundation/jito-programs/blob/v0.1.5/mev-programs/programs/tip-distribution/src/lib.rs#L385
-pub(crate) const JITO_PROGRAM: &str = "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7";
+pub const JITO_PROGRAM: &str = "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7";
 pub(crate) const TIP_DISTRIBUTION_ACCOUNT_DISCRIMINATOR: [u8; 8] =
     [85, 64, 113, 198, 234, 94, 120, 123];
 

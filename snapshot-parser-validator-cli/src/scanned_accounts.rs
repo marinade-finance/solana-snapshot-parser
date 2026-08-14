@@ -1,4 +1,3 @@
-use crate::jito_mev::JITO_PROGRAM;
 use crate::jito_priority_fee::JITO_PRIORITY_FEE_DISTRIBUTION_PROGRAM;
 use {
     log::info, snapshot_parser::account_scan::scan_accounts_by_owner,
@@ -12,9 +11,12 @@ pub struct ScannedAccounts {
     pub priority_fee_distribution: Arc<Vec<(Pubkey, AccountSharedData)>>,
 }
 
-pub fn scan_required_accounts(bank: &Arc<Bank>, verify: bool) -> anyhow::Result<ScannedAccounts> {
+pub fn scan_required_accounts(
+    bank: &Arc<Bank>,
+    verify: bool,
+    tip_distribution_program: Pubkey,
+) -> anyhow::Result<ScannedAccounts> {
     let stake_program = solana_stake_interface::program::ID;
-    let tip_distribution_program: Pubkey = JITO_PROGRAM.try_into()?;
     let priority_fee_distribution_program: Pubkey =
         JITO_PRIORITY_FEE_DISTRIBUTION_PROGRAM.try_into()?;
 
