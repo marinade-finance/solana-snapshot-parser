@@ -2,7 +2,10 @@ use crate::utils::jito_parser::{get_epoch_created_at, read_jito_commission_and_e
 use crate::utils::SliceAt;
 use solana_program::pubkey::Pubkey;
 use solana_sdk::account::{AccountSharedData, ReadableAccount};
-use {log::info, solana_stake_interface::stake_history::Epoch};
+use {
+    log::{info, warn},
+    solana_stake_interface::stake_history::Epoch,
+};
 
 pub struct JitoPriorityFeeMeta {
     pub validator_vote_account: Pubkey,
@@ -25,6 +28,7 @@ const TOTAL_LAMPORTS_TRASFERRED_BYTE_OFFSET: usize = 8 + 2 + 8; // epoch + commi
 pub fn fetch_jito_priority_fee_metas(
     priority_fee_distribution_accounts: &[(Pubkey, AccountSharedData)],
     epoch: Epoch,
+    require_data: bool,
 ) -> anyhow::Result<Vec<JitoPriorityFeeMeta>> {
     let mut jito_priority_fee_metas: Vec<JitoPriorityFeeMeta> = Vec::new();
 
@@ -38,9 +42,16 @@ pub fn fetch_jito_priority_fee_metas(
     }
 
     if jito_priority_fee_metas.is_empty() {
-        return Err(anyhow::anyhow!(
-            "Not expected. No Jito Priority Fee data found. Evaluate the snapshot data."
-        ));
+        if require_data {
+            return Err(anyhow::anyhow!(
+                "Not expected. No Jito Priority Fee data found. Evaluate the snapshot data."
+            ));
+        }
+        // Some clusters (e.g. testnet) have no priority-fee distribution accounts
+        // for the epoch; the caller opted out of treating that as fatal.
+        warn!(
+            "No Jito Priority Fee data found for epoch {epoch}; continuing (priority-fee data not required)."
+        );
     }
 
     info!(

@@ -46,6 +46,11 @@ struct Args {
     /// Jito tip-payment program id (defaults to mainnet); override for other clusters
     #[arg(long, env, default_value = JITO_TIP_PAYMENT_PROGRAM)]
     tip_payment_program: Pubkey,
+
+    /// Treat missing Jito priority-fee distribution data as fatal; disable for
+    /// clusters (e.g. testnet) that have no priority-fee accounts
+    #[arg(long, env, default_value_t = true)]
+    require_priority_fee_data: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -66,6 +71,7 @@ fn main() -> anyhow::Result<()> {
         args.tip_distribution_program,
     )?;
 
+    let require_priority_fee_data = args.require_priority_fee_data;
     let validator_meta_collection_handle = {
         let bank = bank.clone();
         let tip_distribution = scanned_accounts.tip_distribution.clone();
@@ -78,6 +84,7 @@ fn main() -> anyhow::Result<()> {
                     &bank,
                     &tip_distribution,
                     &priority_fee_distribution,
+                    require_priority_fee_data,
                 )?;
                 write_to_json_file(
                     &validator_meta_collection,

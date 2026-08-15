@@ -114,6 +114,7 @@ pub fn generate_validator_collection(
     bank: &Arc<Bank>,
     tip_distribution_accounts: &[(Pubkey, AccountSharedData)],
     priority_fee_distribution_accounts: &[(Pubkey, AccountSharedData)],
+    require_priority_fee_data: bool,
 ) -> anyhow::Result<ValidatorMetaCollection> {
     assert!(bank.is_frozen());
 
@@ -133,8 +134,11 @@ pub fn generate_validator_collection(
 
     let vote_account_metas = fetch_vote_account_metas(bank, epoch);
     let jito_mev_metas = fetch_jito_mev_metas(tip_distribution_accounts, epoch)?;
-    let jito_priority_fee_metas =
-        fetch_jito_priority_fee_metas(priority_fee_distribution_accounts, epoch)?;
+    let jito_priority_fee_metas = fetch_jito_priority_fee_metas(
+        priority_fee_distribution_accounts,
+        epoch,
+        require_priority_fee_data,
+    )?;
 
     let mut validator_metas = vote_account_metas
         .into_iter()

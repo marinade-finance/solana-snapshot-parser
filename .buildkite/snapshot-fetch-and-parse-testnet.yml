@@ -8,9 +8,6 @@ env:
   # collide. Note: nothing prunes this dir on failed builds; orphaned temp
   # snapshot dirs from crashed runs need separate cleanup.
   WORKING_DIR: "/mnt/storage-1/snapshots-testnet"
-  # Testnet genesis: passed positionally to fetch-genesis.bash (which otherwise
-  # defaults to mainnet RPC).
-  RPC_URL: "https://api.testnet.solana.com"
   slack_api: "https://slack.com/api/chat.postMessage"
   slack_feed: "feed-snapshot-testnet"
 
@@ -106,7 +103,10 @@ steps:
   - label: ":cloud: :arrow_right: :floppy_disk: Fetch genesis"
     commands:
     - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
-    - ./scripts/fetch-genesis.bash "$$snapshot_dir" "$RPC_URL"
+    # Cluster RPC inlined as a literal (not an env var): a single-$ env would be
+    # substituted at pipeline-upload time where an agent environment hook can
+    # override it and pull mainnet genesis into the testnet ledger.
+    - ./scripts/fetch-genesis.bash "$$snapshot_dir" "https://api.testnet.solana.com"
 
   - label: ":cloud: :arrow_right: :floppy_disk: Fetch snapshot"
     commands:
@@ -149,7 +149,8 @@ steps:
         --output-stake-meta-collection "./stakes.json" \
         --output-jito-stake-meta "./jito-stake-meta.json" \
         --tip-distribution-program "DzvGET57TAgEDxvm3ERUM4GNcsAJdqjDLCne9sdfY4wf" \
-        --tip-payment-program "GJHtFqM9agxPmkeKjHny6qiRKrXZALvvFGiKf11QE7hy"
+        --tip-payment-program "GJHtFqM9agxPmkeKjHny6qiRKrXZALvvFGiKf11QE7hy" \
+        --require-priority-fee-data false
     - |
       cp ./validators.json "$$snapshot_dir/validators.json"
       cp ./stakes.json "$$snapshot_dir/stakes.json"
