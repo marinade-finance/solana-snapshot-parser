@@ -47,8 +47,6 @@ pub fn fetch_jito_priority_fee_metas(
                 "Not expected. No Jito Priority Fee data found. Evaluate the snapshot data."
             ));
         }
-        // Some clusters (e.g. testnet) have no priority-fee distribution accounts
-        // for the epoch; the caller opted out of treating that as fatal.
         warn!(
             "No Jito Priority Fee data found for epoch {epoch}; continuing (priority-fee data not required)."
         );
@@ -105,4 +103,22 @@ fn read_priority_fee_total_lamports_transferred(
     );
 
     Ok(total_lamports_transferred)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_is_ok_when_not_required() {
+        let accounts: Vec<(Pubkey, AccountSharedData)> = vec![];
+        let metas = fetch_jito_priority_fee_metas(&accounts, 1002, false).unwrap();
+        assert!(metas.is_empty());
+    }
+
+    #[test]
+    fn empty_is_err_when_required() {
+        let accounts: Vec<(Pubkey, AccountSharedData)> = vec![];
+        assert!(fetch_jito_priority_fee_metas(&accounts, 1002, true).is_err());
+    }
 }

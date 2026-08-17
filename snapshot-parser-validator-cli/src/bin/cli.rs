@@ -49,7 +49,7 @@ struct Args {
 
     /// Treat missing Jito priority-fee distribution data as fatal; disable for
     /// clusters (e.g. testnet) that have no priority-fee accounts
-    #[arg(long, env, default_value_t = true)]
+    #[arg(long, env, action = clap::ArgAction::Set, default_value_t = true)]
     require_priority_fee_data: bool,
 }
 
@@ -138,6 +138,7 @@ fn main() -> anyhow::Result<()> {
                         &priority_fee_distribution,
                         tip_distribution_program,
                         tip_payment_program,
+                        require_priority_fee_data,
                     )?;
                 // Jito publishes this collection pretty-printed; parity is checked byte for byte
                 write_to_json_file(&jito_stake_meta_collection, &output_path)?;
@@ -182,4 +183,64 @@ fn main() -> anyhow::Result<()> {
 
     info!("Finished.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Replays the testnet Parse step's exact argv so the CLI contract is checked
+    // without a snapshot download; would have caught --require-priority-fee-data
+    // being parsed as a bare bool flag.
+    #[test]
+    fn parses_testnet_parse_step_argv() {
+        let args = Args::try_parse_from([
+            "snapshot-parser-validator-cli",
+            "--ledger-path",
+            ".",
+            "--output-validator-meta-collection",
+            "./validators.json",
+            "--output-stake-meta-collection",
+            "./stakes.json",
+            "--output-jito-stake-meta",
+            "./jito-stake-meta.json",
+            "--tip-distribution-program",
+            "DzvGET57TAgEDxvm3ERUM4GNcsAJdqjDLCne9sdfY4wf",
+            "--tip-payment-program",
+            "GJHtFqM9agxPmkeKjHny6qiRKrXZALvvFGiKf11QE7hy",
+            "--require-priority-fee-data",
+            "false",
+        ])
+        .expect("testnet Parse step argv must parse");
+
+        assert!(!args.require_priority_fee_data);
+        assert_eq!(
+            args.tip_distribution_program,
+            "DzvGET57TAgEDxvm3ERUM4GNcsAJdqjDLCne9sdfY4wf"
+                .parse::<Pubkey>()
+                .unwrap()
+        );
+        assert_eq!(
+            args.tip_payment_program,
+            "GJHtFqM9agxPmkeKjHny6qiRKrXZALvvFGiKf11QE7hy"
+                .parse::<Pubkey>()
+                .unwrap()
+        );
+    }
+
+    // Mainnet keeps the strict default when the flag is omitted.
+    #[test]
+    fn require_priority_fee_data_defaults_true() {
+        let args = Args::try_parse_from([
+            "snapshot-parser-validator-cli",
+            "--ledger-path",
+            ".",
+            "--output-validator-meta-collection",
+            "./validators.json",
+            "--output-stake-meta-collection",
+            "./stakes.json",
+        ])
+        .expect("minimal argv must parse");
+        assert!(args.require_priority_fee_data);
+    }
 }

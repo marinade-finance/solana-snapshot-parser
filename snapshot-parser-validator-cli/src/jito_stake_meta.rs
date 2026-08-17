@@ -143,6 +143,7 @@ pub fn generate_jito_stake_meta_collection(
     priority_fee_distribution_accounts: &[(Pubkey, AccountSharedData)],
     tip_distribution_program: Pubkey,
     tip_payment_program: Pubkey,
+    require_priority_fee_data: bool,
 ) -> anyhow::Result<JitoStakeMetaCollection> {
     assert!(bank.is_frozen());
     let epoch = bank.epoch();
@@ -177,7 +178,10 @@ pub fn generate_jito_stake_meta_collection(
         epoch,
     )?;
     if priority_fee_distribution_metas.is_empty() {
-        anyhow::bail!("Not expected. No Jito priority fee distribution accounts found for epoch {epoch}. Evaluate the snapshot data.");
+        if require_priority_fee_data {
+            anyhow::bail!("Not expected. No Jito priority fee distribution accounts found for epoch {epoch}. Evaluate the snapshot data.");
+        }
+        warn!("No Jito priority fee distribution accounts found for epoch {epoch}; continuing (priority-fee data not required).");
     }
     info!(
         "Jito priority fee distribution accounts for epoch {}: {}",

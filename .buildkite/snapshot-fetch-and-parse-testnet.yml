@@ -4,9 +4,7 @@ agents:
 env:
   GCLOUD_SNAPSHOTS: "gs://marinade-solana-snapshot-testnet"
   LOCAL_SNAPSHOTS: "/mnt/snapshots-storage/snapshots-testnet"
-  # Distinct from the mainnet pipeline's WORKING_DIR so concurrent runs cannot
-  # collide. Note: nothing prunes this dir on failed builds; orphaned temp
-  # snapshot dirs from crashed runs need separate cleanup.
+  # Distinct from mainnet's WORKING_DIR (no cross-run collision); nothing prunes it, so failed-build temp dirs need separate cleanup.
   WORKING_DIR: "/mnt/storage-1/snapshots-testnet"
   slack_api: "https://slack.com/api/chat.postMessage"
   slack_feed: "feed-snapshot-testnet"
@@ -103,9 +101,7 @@ steps:
   - label: ":cloud: :arrow_right: :floppy_disk: Fetch genesis"
     commands:
     - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
-    # Cluster RPC inlined as a literal (not an env var): a single-$ env would be
-    # substituted at pipeline-upload time where an agent environment hook can
-    # override it and pull mainnet genesis into the testnet ledger.
+    # Literal, not $RPC_URL: an agent environment hook owns that name at upload-time interpolation and could pull mainnet genesis.
     - ./scripts/fetch-genesis.bash "$$snapshot_dir" "https://api.testnet.solana.com"
 
   - label: ":cloud: :arrow_right: :floppy_disk: Fetch snapshot"
@@ -194,9 +190,7 @@ steps:
 
   - wait: ~
 
-  # TODO(GEN-8625): re-add the ETL trigger step for testnet once the testnet ETL
-  # scheduler pipeline exists. The mainnet variant triggers "etl-stakes-scheduler"
-  # (branch main); confirm the testnet scheduler slug + branch before wiring it up.
+  # TODO(GEN-8625): re-add the testnet ETL trigger (mainnet triggers etl-stakes-scheduler on branch main) once the testnet scheduler exists.
 
   - label: ":unlock: Concurrency gate unlock"
     command: echo "End of concurrency gate <--"
