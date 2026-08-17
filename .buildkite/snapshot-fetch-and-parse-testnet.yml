@@ -1,0 +1,198 @@
+agents:
+  queue: "snapshots"
+
+env:
+  GCLOUD_SNAPSHOTS: "gs://marinade-solana-snapshot-testnet"
+  LOCAL_SNAPSHOTS: "/mnt/snapshots-storage/snapshots-testnet"
+  # Distinct from mainnet's WORKING_DIR (no cross-run collision); nothing prunes it, so failed-build temp dirs need separate cleanup.
+  WORKING_DIR: "/mnt/storage-1/snapshots-testnet"
+  slack_api: "https://slack.com/api/chat.postMessage"
+  slack_feed: "feed-snapshot-testnet"
+
+steps:
+  - label: ":closed_lock_with_key: Concurrency gate lock"
+    command: echo "--> Start of concurrency gate"
+    concurrency_group: 'solana-snapshot-parser/fetch-and-parse-testnet'
+    concurrency: 1
+
+  - input: "Which epoch to fetch?"
+    fields:
+      - text: "Epoch"
+        key: "epoch"
+        format: "[0-9]+"
+    if: "build.env('EPOCH') == null"
+
+  - wait: ~
+
+  - label: ":black_nib: Env variables setup"
+    key: "setup-env-init"
+    commands:
+    - |
+      epoch=${EPOCH:-$(buildkite-agent meta-data get epoch)}
+      buildkite-agent meta-data set --redacted-vars='' epoch "$$epoch"
+    - |
+      local_snapshot_dir=${LOCAL_SNAPSHOT_DIR:-$LOCAL_SNAPSHOTS}
+      buildkite-agent meta-data set --redacted-vars='' local_snapshot_dir "$$local_snapshot_dir"
+
+  - label: ":memo: Annotate retry parameters"
+    depends_on: "setup-env-init"
+    allow_dependency_failure: true
+    commands:
+      - epoch=$(buildkite-agent meta-data get epoch)
+      - local_snapshot_dir=$(buildkite-agent meta-data get local_snapshot_dir)
+      - |
+        cat <<- EOF | buildkite-agent annotate --priority 6 --style info --context "general-info"
+        ### Retry environment variables
+        If you need to retry the build, use the following parameters:
+
+        \`\`\`
+        EPOCH=$$epoch
+        LOCAL_SNAPSHOT_DIR=$$local_snapshot_dir
+        TEST_MODE=$$TEST_MODE
+        \`\`\`
+        EOF
+
+  - wait: ~
+
+  - label: ":mega: Notification"
+    commands:
+    - |
+      epoch=${EPOCH:-$(buildkite-agent meta-data get epoch)}
+      local_snapshot_dir=$(buildkite-agent meta-data get local_snapshot_dir)
+      test_mode=$([[ -n "$TEST_MODE" && "$TEST_MODE" != "null" ]] && echo " [Test Mode: $$local_snapshot_dir]" || echo "")
+      buildkite-agent meta-data set --redacted-vars="" epoch "$$epoch"
+      curl ${slack_api} -X POST -H 'Content-Type: application/json; charset=utf-8' \
+        -H "Authorization: Bearer $$SLACK_BEARER_TOKEN" -d '{
+          "channel": "'"$slack_feed"'",
+          "attachments": [
+            {
+              "author_name": "Solana Snapshot Parser",
+              "author_link": "https://github.com/marinade-finance/solana-snapshot-parser",
+              "color": "8000FF",
+              "title": "Parsing Solana Snapshot ('"$$epoch"')'"$$test_mode"'.",
+              "title_link": "'"$${BUILDKITE_BUILD_URL}/#$${BUILDKITE_JOB_ID}"'",
+              "footer": "<'"$${BUILDKITE_BUILD_URL}/#$${BUILDKITE_JOB_ID}"'|View in Buildkite>"
+            }
+          ]
+      }'
+
+  - label: ":file_folder: Prepare snapshot directory"
+    commands:
+    - ulimit -a
+    - epoch=$(buildkite-agent meta-data get epoch)
+    - local_snapshot_dir=$(buildkite-agent meta-data get local_snapshot_dir)
+    - |
+      mkdir -p $$WORKING_DIR
+      snapshot_dir=$(mktemp --directory -p "$$WORKING_DIR" "snapshot-$$epoch-$(date +%s)-XXXXXX")
+
+      local_snapshot=$(find $$local_snapshot_dir/*/$$epoch/ -name 'snapshot-*.tar.zst' 2>/dev/null | head -1)
+      if [[ -n "$$local_snapshot" ]]; then
+        echo "Found local snapshot at: $$local_snapshot"
+        ln -s "$$local_snapshot" "$$snapshot_dir/"
+        buildkite-agent meta-data set --redacted-vars="" snapshot_local "true"
+      else
+        echo "No local snapshot found, using temp dir: $$snapshot_dir"
+        buildkite-agent meta-data set --redacted-vars="" snapshot_local "false"
+      fi
+      buildkite-agent meta-data set --redacted-vars="" snapshot_dir "$$snapshot_dir"
+
+  - wait: ~
+
+  - label: ":cloud: :arrow_right: :floppy_disk: Fetch genesis"
+    commands:
+    - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
+    # Literal, not $RPC_URL: an agent environment hook owns that name at upload-time interpolation and could pull mainnet genesis.
+    - ./scripts/fetch-genesis.bash "$$snapshot_dir" "https://api.testnet.solana.com"
+
+  - label: ":cloud: :arrow_right: :floppy_disk: Fetch snapshot"
+    commands:
+    - snapshot_local=$(buildkite-agent meta-data get snapshot_local)
+    - |
+      if [[ "$$snapshot_local" == "true" ]]; then
+        echo "Skipping snapshot fetch, using local snapshot"
+      else
+        snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
+        epoch=$(buildkite-agent meta-data get epoch)
+        ./scripts/fetch-snapshot.bash "$$epoch" "$$snapshot_dir" "$GCLOUD_SNAPSHOTS"
+      fi
+
+  - label: ":hammer_and_wrench: :rust: Build"
+    commands:
+    - . "$HOME/.cargo/env"
+    - cargo build --release --bin snapshot-parser-validator-cli
+    - '[ "$${CARGO_TARGET_DIR:-target}" = target ] || install -D -t target/release "$$CARGO_TARGET_DIR"/release/snapshot-parser-validator-cli'
+    artifact_paths:
+      - target/release/snapshot-parser-validator-cli
+
+  - wait: ~
+
+  - label: ":microscope: Parse Snapshot"
+    env:
+      RUST_BACKTRACE: full
+      # RUST_LOG: trace
+    artifact_paths:
+        - ./validators.json
+        - ./stakes.json
+        - ./jito-stake-meta.json
+    commands:
+    - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
+    - buildkite-agent artifact download --include-retried-jobs target/release/snapshot-parser-validator-cli .
+    - chmod +x target/release/snapshot-parser-validator-cli
+    - |
+      ./target/release/snapshot-parser-validator-cli \
+        --ledger-path "$$snapshot_dir" \
+        --output-validator-meta-collection "./validators.json" \
+        --output-stake-meta-collection "./stakes.json" \
+        --output-jito-stake-meta "./jito-stake-meta.json" \
+        --tip-distribution-program "DzvGET57TAgEDxvm3ERUM4GNcsAJdqjDLCne9sdfY4wf" \
+        --tip-payment-program "GJHtFqM9agxPmkeKjHny6qiRKrXZALvvFGiKf11QE7hy" \
+        --require-priority-fee-data false
+    - |
+      cp ./validators.json "$$snapshot_dir/validators.json"
+      cp ./stakes.json "$$snapshot_dir/stakes.json"
+      if [[ -f ./jito-stake-meta.json ]]; then
+        cp ./jito-stake-meta.json "$$snapshot_dir/jito-stake-meta.json"
+      else
+        echo "Jito stake meta collection was not produced!" | buildkite-agent annotate --style warning --context "jito-stake-meta"
+      fi
+
+  - wait: ~
+
+  - label: ":floppy_disk: :arrow_left: :cloud: Fetch past validator data"
+    if: build.env("TEST_MODE") == null
+    commands:
+    - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
+    - epoch=$(buildkite-agent meta-data get epoch)
+    - previous_epoch=$((epoch - 1))
+    - gcloud storage cp "$GCLOUD_SNAPSHOTS/$$previous_epoch/validators.json" "$GCLOUD_SNAPSHOTS/$$epoch/past-validators.json" || echo "Previous validator data not available!"
+
+  - label: ":floppy_disk: :arrow_right: :cloud: Upload artifacts"
+    if: build.env("TEST_MODE") == null
+    commands:
+    - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
+    - epoch=$(buildkite-agent meta-data get epoch)
+    - gcloud storage cp "$$snapshot_dir/validators.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
+    - gcloud storage cp "$$snapshot_dir/stakes.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
+    - |
+      if [[ -f "$$snapshot_dir/jito-stake-meta.json" ]]; then
+        gcloud storage cp "$$snapshot_dir/jito-stake-meta.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
+      else
+        echo "Jito stake meta collection was not produced!"
+      fi
+
+  - wait: ~
+
+  - label: "🗑️ Cleanup"
+    commands:
+    - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
+    - 'echo "Cleaning snapshot dir: $$snapshot_dir"'
+    - rm -rf --preserve-root "$$snapshot_dir"
+
+  - wait: ~
+
+  # TODO(GEN-8625): re-add the testnet ETL trigger (mainnet triggers etl-stakes-scheduler on branch main) once the testnet scheduler exists.
+
+  - label: ":unlock: Concurrency gate unlock"
+    command: echo "End of concurrency gate <--"
+    concurrency_group: 'solana-snapshot-parser/fetch-and-parse-testnet'
+    concurrency: 1

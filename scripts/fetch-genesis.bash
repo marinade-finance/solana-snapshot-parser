@@ -3,10 +3,11 @@
 set -e
 
 target_dir="$1"
+rpc_url_arg="$2"
 
 if [[ -z $target_dir ]]
 then
-    echo "Usage: $0 <target-dir>" >&2
+    echo "Usage: $0 <target-dir> [rpc-url]" >&2
     exit 1
 fi
 
@@ -16,7 +17,7 @@ then
     exit 1
 fi
 
-rpc_url="${RPC_URL:-https://api.mainnet-beta.solana.com}"
+rpc_url="${rpc_url_arg:-${RPC_URL:-https://api.mainnet-beta.solana.com}}"
 wget --retry-connrefused --waitretry=1 --tries=10 --timeout=30 -P "$target_dir" "${rpc_url}/genesis.tar.bz2"
 
 pv "$target_dir"/genesis.tar.bz2 | tar -xj -C "$target_dir"
