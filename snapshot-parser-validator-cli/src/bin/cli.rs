@@ -182,7 +182,10 @@ fn main() -> anyhow::Result<()> {
     }
 
     info!("Finished.");
-    Ok(())
+    log::logger().flush();
+
+    // Outputs are already flushed and synced, so skip the accounts-db teardown of a dying process
+    std::process::exit(0);
 }
 
 #[cfg(test)]
