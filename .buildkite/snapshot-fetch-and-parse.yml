@@ -162,6 +162,19 @@ steps:
     - previous_epoch=$((epoch - 1))
     - gcloud storage cp "$GCLOUD_SNAPSHOTS/$$previous_epoch/validators.json" "$GCLOUD_SNAPSHOTS/$$epoch/past-validators.json" || echo "Previous validator data not available!"
 
+  # TEMP(GEN-8744): revert before merge -- exposes TEST_MODE outputs for byte-comparison against production
+  - label: ":floppy_disk: :arrow_right: :cloud: [TEMP] Upload TEST_MODE outputs for comparison"
+    if: build.env("TEST_MODE") != null
+    commands:
+    - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
+    - epoch=$(buildkite-agent meta-data get epoch)
+    - |
+      for f in validators.json stakes.json jito-stake-meta.json; do
+        if [[ -f "$$snapshot_dir/$$f" ]]; then
+          gcloud storage cp "$$snapshot_dir/$$f" "$GCLOUD_SNAPSHOTS/test-runs/$$epoch-build$$BUILDKITE_BUILD_NUMBER/"
+        fi
+      done
+
   - label: ":floppy_disk: :arrow_right: :cloud: Upload artifacts"
     if: build.env("TEST_MODE") == null
     commands:
