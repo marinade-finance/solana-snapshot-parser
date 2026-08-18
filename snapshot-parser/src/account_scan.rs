@@ -16,6 +16,8 @@ use {
 };
 
 // get_program_accounts is a full accounts-index scan per call, so one call per owner costs N passes
+// Correct only for a bank whose live accounts are all in storages (e.g. freshly snapshot-restored):
+// force_flush_accounts_cache flushes rooted slots only, so unrooted write-cache entries stay invisible
 pub fn scan_accounts_by_owner(
     bank: &Arc<Bank>,
     owners: &[Pubkey],
