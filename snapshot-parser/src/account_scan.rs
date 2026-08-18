@@ -15,60 +15,42 @@ use {
     },
 };
 
-/// Collects every live account owned by one of `owners`, in two phases.
-///
-/// Phase 1 sweeps the snapshot storages in parallel and keeps only pubkeys, never account data.
-/// It yields a superset: a storage holds stale versions, and the same pubkey appears in every
-/// storage it was ever written to. Phase 2 re-loads each candidate through the accounts index,
-/// which is what narrows the superset down to exactly what `get_program_accounts` returns.
-///
-/// The alternative, `Bank::scan_all_accounts`, walks the index in pubkey order and does one
-/// random storage read per account, single threaded.
+// get_program_accounts is a full accounts-index scan per call, so one call per owner costs N passes
 pub fn scan_accounts_by_owner(
     bank: &Arc<Bank>,
     owners: &[Pubkey],
 ) -> anyhow::Result<HashMap<Pubkey, Vec<(Pubkey, AccountSharedData)>>> {
     let wanted: HashSet<Pubkey> = owners.iter().copied().collect();
 
-    // Accounts still in the write cache have no storage for phase 1 to find. Flushing first is
-    // agave's own pre-snapshot sequence; on a bank freshly loaded from a full snapshot the cache
-    // is empty and this costs nothing.
+    // accounts still in the write cache have no storage for the sweep to find
     bank.force_flush_accounts_cache();
 
     let sweep_started = Instant::now();
     let storages = bank.get_snapshot_storages(None);
-    let storage_count = storages.len();
     let candidates: HashSet<Pubkey> = storages
         .par_iter()
         .try_fold(HashSet::<Pubkey>::new, |mut candidates, storage| {
             storage
                 .accounts
                 .scan_accounts_without_data(|_offset, account| {
-                    // A live account is loadable, so a zero-lamport stored version is either
-                    // stale or a tombstone and can never be the one we end up keeping.
+                    // a live account is loadable, so a zero-lamport version is never the one kept
                     if account.lamports != 0 && wanted.contains(account.owner) {
                         candidates.insert(*account.pubkey);
                     }
                 })?;
             anyhow::Ok(candidates)
         })
-        .try_reduce(HashSet::new, |mut merged, mut other| {
-            if merged.len() < other.len() {
-                std::mem::swap(&mut merged, &mut other);
-            }
+        .try_reduce(HashSet::new, |mut merged, other| {
             merged.extend(other);
             anyhow::Ok(merged)
         })?;
-    // HashSet iteration order is randomised per process, and `collect` below preserves the input
-    // order, so without this the result vecs come out in a different order on every run of the
-    // same snapshot. Sorting restores the run-to-run reproducibility the index scan had, and
-    // groups the phase 2 lookups by accounts-index bin.
+    // HashSet order is randomised per process; sorting keeps the output reproducible run to run
     let mut candidates: Vec<Pubkey> = candidates.into_iter().collect();
     candidates.sort_unstable();
     info!(
         "Storage sweep: {} candidate pubkeys from {} storages in {:?}",
         candidates.len(),
-        storage_count,
+        storages.len(),
         sweep_started.elapsed()
     );
 
@@ -77,8 +59,7 @@ pub fn scan_accounts_by_owner(
     let confirmed: Vec<(Pubkey, AccountSharedData)> = candidates
         .par_iter()
         .filter_map(|pubkey| {
-            // What Bank::get_account does, minus filling the read-only cache: every candidate is
-            // touched exactly once here, so caching them would only evict useful entries.
+            // every candidate is loaded once, so caching it would only evict useful entries
             let (account, _slot) = accounts_db.load(
                 &bank.ancestors,
                 pubkey,
@@ -100,10 +81,10 @@ pub fn scan_accounts_by_owner(
     let mut collected: HashMap<Pubkey, Vec<(Pubkey, AccountSharedData)>> =
         wanted.iter().map(|owner| (*owner, Vec::new())).collect();
     for (pubkey, account) in confirmed {
-        let owner = *account.owner();
-        if let Some(accounts) = collected.get_mut(&owner) {
-            accounts.push((pubkey, account));
-        }
+        collected
+            .entry(*account.owner())
+            .or_default()
+            .push((pubkey, account));
     }
 
     for (owner, accounts) in &collected {
@@ -122,9 +103,6 @@ mod tests {
         std::collections::BTreeSet,
     };
 
-    /// Deliberately not a plain `collect`: a `BTreeSet` would swallow a repeated pubkey, and a
-    /// repeated pubkey is exactly what a broken phase 1 dedupe produces. Downstream that would
-    /// double count a stake account, so every comparison below has to reject it.
     fn pubkeys(accounts: &[(Pubkey, AccountSharedData)]) -> BTreeSet<Pubkey> {
         let pubkeys: BTreeSet<Pubkey> = accounts.iter().map(|(pubkey, _)| *pubkey).collect();
         assert_eq!(
@@ -149,8 +127,7 @@ mod tests {
         })
     }
 
-    /// Phase 1 only sees storages, so a test bank has to root and flush its write cache the same
-    /// way agave does before taking a snapshot.
+    // the sweep only sees storages, so a test bank has to root and flush its write cache
     fn persist(bank: &Arc<Bank>) {
         bank.freeze();
         bank.squash();
@@ -165,8 +142,6 @@ mod tests {
                 pubkeys(&bank.get_program_accounts(owner).unwrap()),
                 "scan diverged from get_program_accounts for owner {owner}"
             );
-            // The order the storages happen to be swept in must not reach the caller: downstream
-            // artifacts are diffed between runs of the same snapshot.
             assert!(
                 scanned[owner].is_sorted_by_key(|(pubkey, _)| *pubkey),
                 "scan result for owner {owner} is not in a reproducible order"
@@ -210,7 +185,7 @@ mod tests {
         let wanted_owners = [Pubkey::new_unique(), Pubkey::new_unique()];
         let ignored_owner = Pubkey::new_unique();
 
-        // slot 0: every account starts out owned by a wanted owner
+        // slot 0
         let rewritten = Pubkey::new_unique();
         let reowned = Pubkey::new_unique();
         let drained = Pubkey::new_unique();
@@ -221,7 +196,7 @@ mod tests {
         parent.store_account(&untouched, &account(&wanted_owners[1], 40, vec![3; 4]));
         persist(&parent);
 
-        // slot 1: the same pubkeys get a second, newer version in a second storage
+        // slot 1: newer versions of the same pubkeys land in a second storage
         let bank = Bank::new_from_parent_with_bank_forks(
             &bank_forks,
             parent.clone(),
@@ -248,7 +223,6 @@ mod tests {
             "a drained account must be dropped, an untouched one kept"
         );
 
-        // the result must carry slot 1's bytes, not the stale slot 0 version phase 1 also saw
         let (_, account) = scanned[&wanted_owners[0]]
             .iter()
             .find(|(pubkey, _)| *pubkey == rewritten)
