@@ -84,18 +84,22 @@ steps:
     - |
       mkdir -p $$WORKING_DIR
       snapshot_dir=$(mktemp --directory -p "$$WORKING_DIR" "snapshot-$$epoch-$(date +%s)-XXXXXX")
+      # Record the dir before copying so Cleanup can remove it even if the copy fails.
+      buildkite-agent meta-data set --redacted-vars="" snapshot_dir "$$snapshot_dir"
 
       local_snapshot=$(find $$local_snapshot_dir/*/$$epoch/ -name 'snapshot-*.tar.zst' 2>/dev/null | head -1)
       if [[ -n "$$local_snapshot" ]]; then
         echo "Found local snapshot at: $$local_snapshot"
         # Copy (not symlink): unpacking the producer-owned testnet archive in place fails with EPERM; a copy into the agent-owned WORKING_DIR unpacks cleanly. -f overwrites a stale partial copy on retry.
-        cp -f "$$local_snapshot" "$$snapshot_dir/"
+        if ! cp -f -- "$$local_snapshot" "$$snapshot_dir/"; then
+          echo "Failed to copy local snapshot" >&2
+          exit 1
+        fi
         buildkite-agent meta-data set --redacted-vars="" snapshot_local "true"
       else
         echo "No local snapshot found, using temp dir: $$snapshot_dir"
         buildkite-agent meta-data set --redacted-vars="" snapshot_local "false"
       fi
-      buildkite-agent meta-data set --redacted-vars="" snapshot_dir "$$snapshot_dir"
 
   - wait: ~
 
