@@ -5266,6 +5266,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "log",
+ "rayon",
  "serde",
  "serde_json",
  "shellexpand",

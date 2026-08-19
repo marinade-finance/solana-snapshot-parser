@@ -187,6 +187,7 @@ steps:
   - wait: ~
 
   - label: ":gear: Trigger Stakes ETL to speed up pipeline processing"
+    if: build.env("TEST_MODE") == null
     env:
       TRIGGER_BRANCH: "main"
     commands:
