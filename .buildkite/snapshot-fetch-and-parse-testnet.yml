@@ -15,6 +15,13 @@ steps:
     concurrency_group: 'solana-snapshot-parser/fetch-and-parse-testnet'
     concurrency: 1
 
+  - label: "🧹 Cleanup"
+    commands:
+    # Reclaim leftover dirs from prior runs whose end Cleanup didn't run.
+    - |
+      mkdir -p "$$WORKING_DIR"
+      find "$$WORKING_DIR" -mindepth 1 -maxdepth 1 -type d -name 'snapshot-*' -exec rm -rf --preserve-root {} +
+
   - input: "Which epoch to fetch?"
     fields:
       - text: "Epoch"
@@ -84,17 +91,22 @@ steps:
     - |
       mkdir -p $$WORKING_DIR
       snapshot_dir=$(mktemp --directory -p "$$WORKING_DIR" "snapshot-$$epoch-$(date +%s)-XXXXXX")
+      # Record the dir before copying so its path is in meta-data even if the copy fails.
+      buildkite-agent meta-data set --redacted-vars="" snapshot_dir "$$snapshot_dir"
 
       local_snapshot=$(find $$local_snapshot_dir/*/$$epoch/ -name 'snapshot-*.tar.zst' 2>/dev/null | head -1)
       if [[ -n "$$local_snapshot" ]]; then
         echo "Found local snapshot at: $$local_snapshot"
-        ln -s "$$local_snapshot" "$$snapshot_dir/"
+        # Copy (not symlink): unpacking the local testnet archive via a symlink fails with EPERM (os error 1); a copy into the agent-owned WORKING_DIR unpacks cleanly.
+        if ! cp -- "$$local_snapshot" "$$snapshot_dir/"; then
+          echo "Failed to copy local snapshot" >&2
+          exit 1
+        fi
         buildkite-agent meta-data set --redacted-vars="" snapshot_local "true"
       else
         echo "No local snapshot found, using temp dir: $$snapshot_dir"
         buildkite-agent meta-data set --redacted-vars="" snapshot_local "false"
       fi
-      buildkite-agent meta-data set --redacted-vars="" snapshot_dir "$$snapshot_dir"
 
   - wait: ~
 
