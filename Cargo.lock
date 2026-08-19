@@ -5320,6 +5320,7 @@ dependencies = [
  "serde_json",
  "snapshot-parser",
  "solana-accounts-db",
+ "solana-loader-v3-interface 7.0.0",
  "solana-program 4.0.0",
  "solana-runtime",
  "solana-sdk",

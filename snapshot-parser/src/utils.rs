@@ -46,6 +46,14 @@ pub fn write_to_json_file<T: Serialize>(data: &T, out_path: &str) -> anyhow::Res
     })
 }
 
+pub fn write_to_text_file(content: &str, out_path: &str) -> anyhow::Result<()> {
+    write_atomic(out_path, |writer| {
+        writer.write_all(content.as_bytes())?;
+
+        Ok(())
+    })
+}
+
 pub fn read_from_json_file<P: AsRef<Path>, T: DeserializeOwned>(in_path: &P) -> anyhow::Result<T> {
     let file = File::open(in_path)?;
     let reader = BufReader::new(file);
@@ -105,6 +113,18 @@ mod tests {
         assert_eq!(
             fs::read_to_string(out.path()).unwrap(),
             serde_json::to_string_pretty(&data).unwrap()
+        );
+        assert!(!Path::new(&format!("{}.tmp", out.path())).exists());
+    }
+
+    #[test]
+    fn text_writer_writes_the_content_verbatim() {
+        let out = OutDir::new("text");
+        write_to_text_file("5dcd612ee1fd3aa3\n", &out.path()).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(out.path()).unwrap(),
+            "5dcd612ee1fd3aa3\n"
         );
         assert!(!Path::new(&format!("{}.tmp", out.path())).exists());
     }

@@ -17,6 +17,7 @@ env_logger = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true }
 snapshot-parser = { workspace = true }
+solana-loader-v3-interface = { workspace = true }
 solana-runtime = { workspace = true }
 solana-accounts-db = { workspace = true }
 solana-program = { workspace = true }

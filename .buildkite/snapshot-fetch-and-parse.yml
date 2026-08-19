@@ -133,6 +133,7 @@ steps:
         - ./validators.json
         - ./stakes.json
         - ./jito-stake-meta.json
+        - ./jito-stake-meta.json.program-hash
     commands:
     - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
     - buildkite-agent artifact download --include-retried-jobs target/release/snapshot-parser-validator-cli .
@@ -147,8 +148,10 @@ steps:
     - |
       cp ./validators.json "$$snapshot_dir/validators.json"
       cp ./stakes.json "$$snapshot_dir/stakes.json"
-      if [[ -f ./jito-stake-meta.json ]]; then
+      if [[ -f ./jito-stake-meta.json && -f ./jito-stake-meta.json.program-hash ]]; then
         cp ./jito-stake-meta.json "$$snapshot_dir/jito-stake-meta.json"
+        # Names the uploaded object, so it travels with the collection
+        cp ./jito-stake-meta.json.program-hash "$$snapshot_dir/jito-stake-meta.json.program-hash"
       else
         echo "Jito stake meta collection was not produced! The stakes ETL consumes this file, see the parser output above." | buildkite-agent annotate --style error --context "jito-stake-meta"
         exit 1
@@ -169,15 +172,22 @@ steps:
     commands:
     - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
     - epoch=$(buildkite-agent meta-data get epoch)
-    - gcloud storage cp "$$snapshot_dir/validators.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
-    - gcloud storage cp "$$snapshot_dir/stakes.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
+    # Checked before the first upload, so a failing epoch leaves no partial data in GCS
     - |
-      if [[ -f "$$snapshot_dir/jito-stake-meta.json" ]]; then
-        gcloud storage cp "$$snapshot_dir/jito-stake-meta.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
-      else
+      if [[ ! -f "$$snapshot_dir/jito-stake-meta.json" || ! -f "$$snapshot_dir/jito-stake-meta.json.program-hash" ]]; then
         echo "Jito stake meta collection was not produced, nothing to upload for the stakes ETL!" | buildkite-agent annotate --style error --context "jito-stake-meta"
         exit 1
       fi
+      jito_program_hash=$(cat "$$snapshot_dir/jito-stake-meta.json.program-hash")
+      # The stakes ETL looks the object up by this name; a malformed hash would make it
+      # silently fall back to Jito's bucket for every epoch from now on
+      if [[ ! "$$jito_program_hash" =~ ^[0-9a-f]{16}$$ ]]; then
+        echo "Jito program hash '$$jito_program_hash' is not 16 lowercase hex characters, refusing to name the uploaded stake meta by it!" | buildkite-agent annotate --style error --context "jito-stake-meta"
+        exit 1
+      fi
+    - gcloud storage cp "$$snapshot_dir/validators.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
+    - gcloud storage cp "$$snapshot_dir/stakes.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
+    - gcloud storage cp "$$snapshot_dir/jito-stake-meta.json" "$GCLOUD_SNAPSHOTS/$$epoch/jito-stake-meta-$$jito_program_hash.json"
 
   - wait: ~
 

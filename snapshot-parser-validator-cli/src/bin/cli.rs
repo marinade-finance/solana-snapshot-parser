@@ -1,8 +1,9 @@
 use env_logger::{Builder, Env};
 use log::LevelFilter;
 use snapshot_parser::stake_meta;
-use snapshot_parser::utils::write_to_json_file;
+use snapshot_parser::utils::{write_to_json_file, write_to_text_file};
 use snapshot_parser_validator_cli::jito_mev::JITO_PROGRAM;
+use snapshot_parser_validator_cli::jito_program_hash::PROGRAM_HASH_SHORT_LEN;
 use snapshot_parser_validator_cli::jito_stake_meta::JITO_TIP_PAYMENT_PROGRAM;
 use snapshot_parser_validator_cli::scanned_accounts::scan_required_accounts;
 use snapshot_parser_validator_cli::{jito_stake_meta, validator_meta};
@@ -53,9 +54,27 @@ struct Args {
     require_priority_fee_data: bool,
 
     /// Treat a failed Jito stake meta collection as fatal; enable for clusters
-    /// (e.g. mainnet) whose downstream ETL consumes the uploaded file
+    /// (e.g. mainnet) whose downstream ETL consumes the uploaded file. Requires
+    /// --output-jito-stake-meta
     #[arg(long, env, action = clap::ArgAction::Set, default_value_t = false)]
     require_jito_stake_meta: bool,
+}
+
+impl Args {
+    /// Rejects flag combinations that would silently do nothing at runtime
+    fn validate(&self) -> anyhow::Result<()> {
+        if self.require_jito_stake_meta && self.output_jito_stake_meta.is_none() {
+            anyhow::bail!("--require-jito-stake-meta true needs --output-jito-stake-meta, otherwise the required collection is never produced");
+        }
+
+        Ok(())
+    }
+}
+
+/// The pipeline names the uploaded collection by this hash, so it must not read 342MB
+/// of JSON to find it
+fn program_hash_path(output_jito_stake_meta: &str) -> String {
+    format!("{output_jito_stake_meta}.program-hash")
 }
 
 fn main() -> anyhow::Result<()> {
@@ -65,6 +84,7 @@ fn main() -> anyhow::Result<()> {
 
     info!("Starting snapshot parser...");
     let args: Args = Args::parse();
+    args.validate()?;
 
     info!("Creating bank from ledger path: {:?}", args.ledger_path);
     let bank = create_bank_from_ledger(&args.ledger_path)?;
@@ -148,7 +168,17 @@ fn main() -> anyhow::Result<()> {
                     )?;
                 // Jito publishes this collection pretty-printed; parity is checked byte for byte
                 write_to_json_file(&jito_stake_meta_collection, &output_path)?;
-                info!("Jito stake meta collection finished.");
+
+                let program_hash = &jito_stake_meta_collection.jito_program_hash;
+                let short_hash = program_hash
+                    .get(..PROGRAM_HASH_SHORT_LEN)
+                    .ok_or_else(|| anyhow::anyhow!("Malformed Jito program hash {program_hash}"))?;
+                // The upload step names the GCS object by this hash, so it lands next to
+                // the collection instead of being dug out of the JSON
+                write_to_text_file(&format!("{short_hash}\n"), &program_hash_path(&output_path))?;
+                info!(
+                    "Jito stake meta collection finished, Jito program hash: {program_hash} (short: {short_hash})."
+                );
                 Ok(())
             };
 
@@ -229,8 +259,12 @@ mod tests {
             "GJHtFqM9agxPmkeKjHny6qiRKrXZALvvFGiKf11QE7hy",
             "--require-priority-fee-data",
             "false",
+            "--require-jito-stake-meta",
+            "false",
         ])
         .expect("testnet Parse step argv must parse");
+        args.validate()
+            .expect("testnet Parse step argv must be valid");
 
         assert!(!args.require_priority_fee_data);
         // Testnet must keep producing the Jito collection best-effort
@@ -262,8 +296,63 @@ mod tests {
             "./stakes.json",
         ])
         .expect("minimal argv must parse");
+        args.validate().expect("minimal argv must be valid");
         assert!(args.require_priority_fee_data);
         assert!(!args.require_jito_stake_meta);
+    }
+
+    // A required collection with nowhere to write it is a configuration mistake that
+    // would otherwise pass the build without ever producing the file the ETL waits for.
+    #[test]
+    fn require_jito_stake_meta_without_an_output_is_rejected() {
+        let args = Args::try_parse_from([
+            "snapshot-parser-validator-cli",
+            "--ledger-path",
+            ".",
+            "--output-validator-meta-collection",
+            "./validators.json",
+            "--output-stake-meta-collection",
+            "./stakes.json",
+            "--require-jito-stake-meta",
+            "true",
+        ])
+        .expect("argv parses, the combination is rejected by validation");
+
+        let err = args
+            .validate()
+            .expect_err("--require-jito-stake-meta true must not be a silent no-op");
+        assert!(
+            err.to_string().contains("--output-jito-stake-meta"),
+            "the error must name the missing flag: {err}"
+        );
+    }
+
+    // Explicitly not requiring the collection stays valid without an output path
+    #[test]
+    fn not_requiring_jito_stake_meta_without_an_output_is_allowed() {
+        let args = Args::try_parse_from([
+            "snapshot-parser-validator-cli",
+            "--ledger-path",
+            ".",
+            "--output-validator-meta-collection",
+            "./validators.json",
+            "--output-stake-meta-collection",
+            "./stakes.json",
+            "--require-jito-stake-meta",
+            "false",
+        ])
+        .expect("argv must parse");
+        args.validate().expect("argv must be valid");
+        assert!(!args.require_jito_stake_meta);
+    }
+
+    // The pipeline reads this path to name the uploaded GCS object
+    #[test]
+    fn program_hash_side_file_sits_next_to_the_collection() {
+        assert_eq!(
+            program_hash_path("./jito-stake-meta.json"),
+            "./jito-stake-meta.json.program-hash"
+        );
     }
 
     // Replays the mainnet Parse step's argv: the Jito collection is mandatory there,
@@ -284,6 +373,8 @@ mod tests {
             "true",
         ])
         .expect("mainnet Parse step argv must parse");
+        args.validate()
+            .expect("mainnet Parse step argv must be valid");
 
         assert!(args.require_jito_stake_meta);
         assert!(args.require_priority_fee_data);
