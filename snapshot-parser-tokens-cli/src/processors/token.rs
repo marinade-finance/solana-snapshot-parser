@@ -221,4 +221,61 @@ mod tests {
         invalid[108] = 9;
         assert!(!keep(invalid));
     }
+
+    // Rows are buffered until a batch is full, so a table smaller than one batch reaches
+    // the DB only through the final flush: dropping that flush would silently lose every
+    // account, and the run would still report success.
+    #[tokio::test]
+    async fn process_ships_every_account_of_a_run_shorter_than_one_batch() {
+        use crate::db_message::BatchOutcome;
+        use indicatif::MultiProgress;
+        use tokio::sync::mpsc;
+
+        let mint = Pubkey::new_unique();
+        let accounts: Vec<(Pubkey, AccountSharedData)> = (0..3)
+            .map(|_| {
+                (
+                    Pubkey::new_unique(),
+                    account_of(token_account_data(
+                        &mint,
+                        spl_token::state::AccountState::Initialized,
+                    )),
+                )
+            })
+            .collect();
+        let expected = accounts.len();
+
+        let (sender, mut receiver) = mpsc::channel(4);
+        let collector = tokio::spawn(async move {
+            let mut rows_received = 0usize;
+            while let Some(msg) = receiver.recv().await {
+                match msg {
+                    DbMessage::Execute { rows, response, .. } => {
+                        rows_received += rows.len();
+                        let _ = response.send(BatchOutcome {
+                            rows_written: rows.len(),
+                            rows_failed: 0,
+                        });
+                    }
+                    _ => panic!("unexpected message"),
+                }
+            }
+            rows_received
+        });
+
+        let counter = Arc::new(ProgressCounter::new(&MultiProgress::new(), "test"));
+        let mut processor = ProcessorToken {
+            token_accounts: Arc::new(accounts),
+            db_writer: DbWriter::new(sender.clone(), INSERT_TOKEN_ACCOUNT_QUERY, counter.clone()),
+            db_sender: sender,
+            token_counter: counter.clone(),
+        };
+
+        processor.process().await.unwrap();
+        // both senders go with the processor, closing the channel for the collector
+        drop(processor);
+
+        assert_eq!(collector.await.unwrap(), expected);
+        assert_eq!(counter.get(), expected as u64);
+    }
 }

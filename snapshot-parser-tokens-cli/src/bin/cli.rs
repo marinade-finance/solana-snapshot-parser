@@ -185,7 +185,10 @@ async fn main() -> anyhow::Result<()> {
             response: response_tx,
         })
         .await?;
-    let _ = response_rx.await?;
+    // finalize() commits the tail and renames the temporary DB onto the output path, so a
+    // failure here means there is no complete DB at that path: it must fail the run rather
+    // than exit 0 and let the manager ingest whatever was already there.
+    response_rx.await??;
     drop(sender);
     db_handle.await??;
     let _ = multi_progress;
