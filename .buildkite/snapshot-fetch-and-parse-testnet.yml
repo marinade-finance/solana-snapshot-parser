@@ -97,7 +97,7 @@ steps:
       local_snapshot=$(find $$local_snapshot_dir/*/$$epoch/ -name 'snapshot-*.tar.zst' 2>/dev/null | head -1)
       if [[ -n "$$local_snapshot" ]]; then
         echo "Found local snapshot at: $$local_snapshot"
-        # Copy (not symlink): unpacking the producer-owned testnet archive in place fails with EPERM; a copy into the agent-owned WORKING_DIR unpacks cleanly.
+        # Copy (not symlink): unpacking the local testnet archive via a symlink fails with EPERM (os error 1); a copy into the agent-owned WORKING_DIR unpacks cleanly.
         if ! cp -- "$$local_snapshot" "$$snapshot_dir/"; then
           echo "Failed to copy local snapshot" >&2
           exit 1
