@@ -142,14 +142,16 @@ steps:
         --ledger-path "$$snapshot_dir" \
         --output-validator-meta-collection "./validators.json" \
         --output-stake-meta-collection "./stakes.json" \
-        --output-jito-stake-meta "./jito-stake-meta.json"
+        --output-jito-stake-meta "./jito-stake-meta.json" \
+        --require-jito-stake-meta true
     - |
       cp ./validators.json "$$snapshot_dir/validators.json"
       cp ./stakes.json "$$snapshot_dir/stakes.json"
       if [[ -f ./jito-stake-meta.json ]]; then
         cp ./jito-stake-meta.json "$$snapshot_dir/jito-stake-meta.json"
       else
-        echo "Jito stake meta collection was not produced!" | buildkite-agent annotate --style warning --context "jito-stake-meta"
+        echo "Jito stake meta collection was not produced! The stakes ETL consumes this file, see the parser output above." | buildkite-agent annotate --style error --context "jito-stake-meta"
+        exit 1
       fi
 
   - wait: ~
@@ -173,7 +175,8 @@ steps:
       if [[ -f "$$snapshot_dir/jito-stake-meta.json" ]]; then
         gcloud storage cp "$$snapshot_dir/jito-stake-meta.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
       else
-        echo "Jito stake meta collection was not produced!"
+        echo "Jito stake meta collection was not produced, nothing to upload for the stakes ETL!" | buildkite-agent annotate --style error --context "jito-stake-meta"
+        exit 1
       fi
 
   - wait: ~

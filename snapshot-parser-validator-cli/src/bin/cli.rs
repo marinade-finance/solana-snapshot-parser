@@ -51,6 +51,11 @@ struct Args {
     /// clusters (e.g. testnet) that have no priority-fee accounts
     #[arg(long, env, action = clap::ArgAction::Set, default_value_t = true)]
     require_priority_fee_data: bool,
+
+    /// Treat a failed Jito stake meta collection as fatal; enable for clusters
+    /// (e.g. mainnet) whose downstream ETL consumes the uploaded file
+    #[arg(long, env, action = clap::ArgAction::Set, default_value_t = false)]
+    require_jito_stake_meta: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -121,6 +126,7 @@ fn main() -> anyhow::Result<()> {
 
     let tip_distribution_program = args.tip_distribution_program;
     let tip_payment_program = args.tip_payment_program;
+    let require_jito_stake_meta = args.require_jito_stake_meta;
     let jito_stake_meta_collection_handle = args.output_jito_stake_meta.map(|output_path| {
         let bank = bank.clone();
         let stake_accounts = scanned_accounts.stake.clone();
@@ -168,12 +174,22 @@ fn main() -> anyhow::Result<()> {
         failure = failure.or(Some(outcome));
     }
 
-    // The Jito collection is a backup of what Jito publishes itself, it must not fail the parsing
+    // Fatal only where the collection is consumed downstream; elsewhere it stays a
+    // best-effort backup of what Jito publishes itself and must not fail the parsing
     if let Some(handle) = jito_stake_meta_collection_handle {
-        match handle.join() {
-            Ok(Ok(())) => info!("Jito stake meta collection completed successfully."),
-            Ok(Err(err)) => error!("Error in Jito stake meta thread: {err:?}"),
-            Err(err) => error!("Jito stake meta thread panicked: {err:?}"),
+        let outcome = match handle.join() {
+            Ok(Ok(())) => {
+                info!("Jito stake meta collection completed successfully.");
+                None
+            }
+            Ok(Err(err)) => Some(format!("Error in Jito stake meta thread: {err:?}")),
+            Err(err) => Some(format!("Jito stake meta thread panicked: {err:?}")),
+        };
+        if let Some(outcome) = outcome {
+            error!("{outcome}");
+            if require_jito_stake_meta {
+                failure = failure.or(Some(outcome));
+            }
         }
     }
 
@@ -217,6 +233,8 @@ mod tests {
         .expect("testnet Parse step argv must parse");
 
         assert!(!args.require_priority_fee_data);
+        // Testnet must keep producing the Jito collection best-effort
+        assert!(!args.require_jito_stake_meta);
         assert_eq!(
             args.tip_distribution_program,
             "DzvGET57TAgEDxvm3ERUM4GNcsAJdqjDLCne9sdfY4wf"
@@ -244,6 +262,30 @@ mod tests {
             "./stakes.json",
         ])
         .expect("minimal argv must parse");
+        assert!(args.require_priority_fee_data);
+        assert!(!args.require_jito_stake_meta);
+    }
+
+    // Replays the mainnet Parse step's argv: the Jito collection is mandatory there,
+    // its absence would stall the stakes ETL.
+    #[test]
+    fn parses_mainnet_parse_step_argv() {
+        let args = Args::try_parse_from([
+            "snapshot-parser-validator-cli",
+            "--ledger-path",
+            ".",
+            "--output-validator-meta-collection",
+            "./validators.json",
+            "--output-stake-meta-collection",
+            "./stakes.json",
+            "--output-jito-stake-meta",
+            "./jito-stake-meta.json",
+            "--require-jito-stake-meta",
+            "true",
+        ])
+        .expect("mainnet Parse step argv must parse");
+
+        assert!(args.require_jito_stake_meta);
         assert!(args.require_priority_fee_data);
     }
 }
