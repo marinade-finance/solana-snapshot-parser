@@ -1,10 +1,7 @@
 use {
     log::info,
     rayon::prelude::*,
-    solana_accounts_db::{
-        accounts_db::{LoadHint, PopulateReadCache},
-        is_loadable::IsLoadable,
-    },
+    solana_accounts_db::accounts_db::{LoadHint, PopulateReadCache},
     solana_program::pubkey::Pubkey,
     solana_runtime::bank::Bank,
     solana_sdk::account::{AccountSharedData, ReadableAccount},
@@ -22,7 +19,8 @@ use {
 // Only use this on a bank loaded straight from a snapshot: there, every live account
 // is guaranteed to be in a storage file. On a bank that has processed transactions
 // since, recent writes may still sit in the write cache where this scan cannot see
-// them (the flush below covers rooted slots only).
+// them (the flush below covers rooted slots only), so the scan errors out rather than
+// under-report.
 pub fn scan_accounts_by_owner(
     bank: &Arc<Bank>,
     owners: &[Pubkey],
@@ -31,6 +29,15 @@ pub fn scan_accounts_by_owner(
 
     // accounts still in the write cache have no storage for the sweep to find
     bank.force_flush_accounts_cache();
+    // the flush covers rooted slots only, and empties the cache of every slot it flushed.
+    // anything left is an unrooted write this scan would silently miss, so refuse to run.
+    let unflushed_slots = bank.rc.accounts.accounts_db.accounts_cache.num_slots();
+    anyhow::ensure!(
+        unflushed_slots == 0,
+        "account scan needs an empty write cache, but {unflushed_slots} slot(s) remain after \
+         flushing the rooted ones; scan a bank loaded straight from a snapshot, or root and \
+         flush the pending writes first"
+    );
 
     let sweep_started = Instant::now();
     let storages = bank.get_snapshot_storages(None);
@@ -47,7 +54,11 @@ pub fn scan_accounts_by_owner(
                 })?;
             anyhow::Ok(candidates)
         })
-        .try_reduce(HashSet::new, |mut merged, other| {
+        .try_reduce(HashSet::new, |mut merged, mut other| {
+            // extend the larger set with the smaller one, so the merge moves fewer entries
+            if other.len() > merged.len() {
+                std::mem::swap(&mut merged, &mut other);
+            }
             merged.extend(other);
             anyhow::Ok(merged)
         })?;
@@ -73,8 +84,9 @@ pub fn scan_accounts_by_owner(
                 LoadHint::Unspecified,
                 PopulateReadCache::False,
             )?;
-            // the same predicate get_program_accounts filters on, not a copy of it
-            (account.is_loadable() && wanted.contains(account.owner()))
+            // load() already drops zero-lamport accounts, so only the owner is left to check
+            wanted
+                .contains(account.owner())
                 .then_some((*pubkey, account))
         })
         .collect();
@@ -181,6 +193,38 @@ mod tests {
         assert!(!scanned.contains_key(&ignored_owner));
 
         assert_matches_get_program_accounts(&bank, &wanted_owners);
+    }
+
+    #[test]
+    fn unrooted_writes_fail_the_scan_instead_of_being_dropped() {
+        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(1_000_000);
+        let (parent, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+
+        let wanted_owners = [Pubkey::new_unique()];
+        let persisted = Pubkey::new_unique();
+        parent.store_account(&persisted, &account(&wanted_owners[0], 10, vec![0; 4]));
+        persist(&parent);
+
+        // slot 1 is never squashed, so this write stays in the write cache: the rooted-only
+        // flush inside the scan cannot move it to a storage
+        let bank =
+            Bank::new_from_parent_with_bank_forks(&bank_forks, parent, Default::default(), 1);
+        let unrooted = Pubkey::new_unique();
+        bank.store_account(&unrooted, &account(&wanted_owners[0], 20, vec![1; 4]));
+
+        // the account is live as far as the bank is concerned
+        assert_eq!(
+            pubkeys(&bank.get_program_accounts(&wanted_owners[0]).unwrap()),
+            pubkeys_of(&[persisted, unrooted])
+        );
+
+        // ...but the sweep would only find the persisted one, so the scan must refuse to answer
+        let err = scan_accounts_by_owner(&bank, &wanted_owners)
+            .expect_err("a scan that cannot see the write cache must not report a partial result");
+        assert!(
+            err.to_string().contains("empty write cache"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
