@@ -1,9 +1,10 @@
-use crate::db_message::{DbMessage, OwnedSqlValue};
+use crate::db_message::{DbMessage, OwnedSqlParams, OwnedSqlValue};
+use crate::db_writer::DbWriter;
 use crate::filters::Filters;
 use crate::processors::Processor;
 use crate::progress_bar::ProgressCounter;
 use crate::sql_params;
-use log::{error, info};
+use log::info;
 use rusqlite::ToSql;
 use solana_program::program_pack::Pack;
 use solana_program::pubkey::Pubkey;
@@ -20,8 +21,8 @@ pub const INSERT_MINT_QUERY: &str = "INSERT OR REPLACE INTO token_mint (pubkey, 
 pub struct ProcessorMint {
     bank: Arc<Bank>,
     db_sender: Sender<DbMessage>,
+    db_writer: DbWriter,
     mints: Vec<Pubkey>,
-    token_counter: Arc<ProgressCounter>,
 }
 
 impl ProcessorMint {
@@ -34,8 +35,8 @@ impl ProcessorMint {
         let mints = filters.account_mints.clone();
         let processor = Self {
             bank,
+            db_writer: DbWriter::new(db_sender.clone(), INSERT_MINT_QUERY, token_progress_counter),
             db_sender,
-            token_counter: token_progress_counter,
             mints,
         };
         processor.create_mint_table().await?;
@@ -71,14 +72,10 @@ impl ProcessorMint {
                 .ok_or_else(|| anyhow::anyhow!("Mint account not found: {}", mint_pubkey))?;
             let mint = spl_token::state::Mint::unpack(account.data())
                 .map_err(|e| anyhow::anyhow!("Failed to unpack mint {}: {:?}", mint_pubkey, e))?;
-            insert_mint(&self.db_sender, &self.token_counter, mint_pubkey, &mint)
-                .await
-                .unwrap_or_else(|e| {
-                    error!("Failed to insert mint {}: {:?}", mint_pubkey, e);
-                    0
-                });
+            self.db_writer.push(mint_row(mint_pubkey, &mint)).await?;
         }
-        Ok(())
+        // there are only a handful of mints, so this flush ships all of them
+        self.db_writer.flush().await
     }
 }
 
@@ -91,14 +88,9 @@ impl Processor for ProcessorMint {
     }
 }
 
-pub async fn insert_mint(
-    db_sender: &Sender<DbMessage>,
-    progress_counter: &Arc<ProgressCounter>,
-    pubkey: &Pubkey,
-    token_mint: &spl_token::state::Mint,
-) -> anyhow::Result<usize> {
-    let (response_tx, response_rx) = oneshot::channel();
-    let owned_params = sql_params![
+/// The parameters of one [`INSERT_MINT_QUERY`] row.
+pub fn mint_row(pubkey: &Pubkey, token_mint: &spl_token::state::Mint) -> OwnedSqlParams {
+    sql_params![
         pubkey.to_string(),
         token_mint
             .mint_authority
@@ -109,14 +101,5 @@ pub async fn insert_mint(
         token_mint
             .freeze_authority
             .map_or(None, |key| Some(key.to_string())),
-    ];
-    db_sender
-        .send(DbMessage::Execute {
-            query: INSERT_MINT_QUERY.to_string(),
-            params: owned_params,
-            response: response_tx,
-        })
-        .await?;
-    progress_counter.inc();
-    response_rx.await?
+    ]
 }

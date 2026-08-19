@@ -8,8 +8,9 @@ use snapshot_parser::cli::path_parser;
 use snapshot_parser_tokens_cli::db_message::DbMessage;
 use snapshot_parser_tokens_cli::filters::Filters;
 use snapshot_parser_tokens_cli::processors::{
-    spawn_processor_task, ProcessorMint, ProcessorNativeStake, ProcessorToken, ProcessorVeMnde,
-    NATIVE_STAKE_ACCOUNT_TABLE, TOKEN_ACCOUNT_TABLE, VE_MNDE_ACCOUNT_TABLE,
+    join_processor_tasks, spawn_processor_task, ProcessorMint, ProcessorNativeStake,
+    ProcessorToken, ProcessorVeMnde, NATIVE_STAKE_ACCOUNT_TABLE, TOKEN_ACCOUNT_TABLE,
+    VE_MNDE_ACCOUNT_TABLE,
 };
 use snapshot_parser_tokens_cli::progress_bar::ProgressCounter;
 use snapshot_parser_tokens_cli::scanned_accounts::scan_required_accounts;
@@ -45,7 +46,7 @@ struct Args {
 
     // SQLite3 memory mapped IO file size in MB, 0 means to disable
     #[arg(long)]
-    sqlite_mmap_size: Option<u16>,
+    sqlite_mmap_size: Option<u64>,
 
     /// Processing in transaction bulks. This is number of inserts in one transaction.
     #[arg(long)]
@@ -167,12 +168,16 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
-    let _ = tokio::join!(
+    // A processor that failed wrote only part of its accounts. Fail before the shutdown
+    // below, so the temporary DB is never promoted: a truncated DB the manager ingests is
+    // indistinguishable from a complete one.
+    join_processor_tasks([
         token_handle,
         mint_handle,
         vemnde_handle,
-        native_stake_handle
-    );
+        native_stake_handle,
+    ])
+    .await?;
 
     let (response_tx, response_rx) = oneshot::channel();
     sender

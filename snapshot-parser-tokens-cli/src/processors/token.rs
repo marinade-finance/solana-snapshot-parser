@@ -1,10 +1,11 @@
-use crate::db_message::{DbMessage, OwnedSqlValue};
+use crate::db_message::{DbMessage, OwnedSqlParams, OwnedSqlValue};
+use crate::db_writer::DbWriter;
 use crate::processors::Processor;
 use crate::progress_bar::ProgressCounter;
 use crate::sql_params;
 use crate::stats::ProcessorCallback;
 use async_trait::async_trait;
-use log::{debug, error};
+use log::debug;
 use rusqlite::ToSql;
 use solana_program::program_error::ProgramError;
 use solana_program::program_pack::Pack;
@@ -45,6 +46,7 @@ pub fn is_token_account_of_mints(mints: &[Pubkey], account: &AccountSharedData) 
 pub struct ProcessorToken {
     token_accounts: Arc<Vec<(Pubkey, AccountSharedData)>>,
     db_sender: Sender<DbMessage>,
+    db_writer: DbWriter,
     token_counter: Arc<ProgressCounter>,
 }
 
@@ -56,6 +58,11 @@ impl ProcessorToken {
     ) -> anyhow::Result<Self> {
         let processor = Self {
             token_accounts,
+            db_writer: DbWriter::new(
+                db_sender.clone(),
+                INSERT_TOKEN_ACCOUNT_QUERY,
+                token_progress_counter.clone(),
+            ),
             db_sender,
             token_counter: token_progress_counter,
         };
@@ -93,14 +100,12 @@ impl ProcessorToken {
         );
         for (pubkey, account) in self.token_accounts.iter() {
             let token_account = spl_token::state::Account::unpack(account.data())?;
-            insert_token(&self.db_sender, &self.token_counter, pubkey, &token_account)
-                .await
-                .unwrap_or_else(|e| {
-                    error!("Failed to insert token account {}: {:?}", pubkey, e);
-                    0
-                });
+            self.db_writer
+                .push(token_account_row(pubkey, &token_account))
+                .await?;
         }
-        Ok(())
+        // the accounts left in the last partial batch
+        self.db_writer.flush().await
     }
 }
 
@@ -120,14 +125,12 @@ impl ProcessorCallback for ProcessorToken {
     }
 }
 
-pub async fn insert_token(
-    db_sender: &Sender<DbMessage>,
-    progress_counter: &Arc<ProgressCounter>,
+/// The parameters of one [`INSERT_TOKEN_ACCOUNT_QUERY`] row.
+pub fn token_account_row(
     pubkey: &Pubkey,
     token_account: &spl_token::state::Account,
-) -> anyhow::Result<usize> {
-    let (response_tx, response_rx) = oneshot::channel();
-    let owned_params = sql_params![
+) -> OwnedSqlParams {
+    sql_params![
         pubkey.to_string(),
         token_account.mint.to_string(),
         token_account.owner.to_string(),
@@ -141,16 +144,7 @@ pub async fn insert_token(
         token_account
             .close_authority
             .map_or(None, |key| Some(bs58::encode(key.as_ref()).into_string())),
-    ];
-    db_sender
-        .send(DbMessage::Execute {
-            query: INSERT_TOKEN_ACCOUNT_QUERY.to_string(),
-            params: owned_params,
-            response: response_tx,
-        })
-        .await?;
-    progress_counter.inc();
-    response_rx.await?
+    ]
 }
 
 #[cfg(test)]

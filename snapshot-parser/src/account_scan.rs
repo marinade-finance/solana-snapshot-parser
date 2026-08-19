@@ -356,6 +356,12 @@ mod tests {
         let scanned = scan_accounts_by_owner(&bank, &wanted_owners).unwrap();
 
         assert_eq!(
+            scanned.keys().copied().collect::<BTreeSet<Pubkey>>(),
+            pubkeys_of(&wanted_owners),
+            "the result must hold an entry per wanted owner and nothing else, so an account \
+             that moved to another owner cannot come back under a key of its own"
+        );
+        assert_eq!(
             pubkeys(&scanned[&wanted_owners[0]]),
             pubkeys_of(&[rewritten]),
             "an account whose owner moved out of the wanted set must be dropped"

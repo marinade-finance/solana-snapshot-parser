@@ -1,4 +1,4 @@
-use crate::db_message::DbMessage;
+use crate::db_message::{BatchOutcome, DbMessage, OwnedSqlParams};
 use crate::progress_bar::ProgressCounter;
 use crate::temp_file::TempFileGuard;
 use log::{debug, error, info};
@@ -27,7 +27,7 @@ impl SQLiteExecutor {
     pub fn new(
         db_path: PathBuf,
         cache_size: Option<i64>,
-        mmap_size: Option<u16>,
+        mmap_size: Option<u64>,
         tx_bulk: Option<u16>,
         db_execute_counter: Arc<ProgressCounter>,
         receiver: Receiver<DbMessage>,
@@ -87,6 +87,24 @@ impl SQLiteExecutor {
         Ok(result)
     }
 
+    /// Execute one batch of rows of the same statement.
+    ///
+    /// Batching is about the channel, not about SQL: the rows are still executed one by
+    /// one, so a row SQLite rejects is logged and skipped exactly as it was when every
+    /// row travelled on its own, and its neighbours in the batch still land. The
+    /// transaction bulk therefore keeps counting rows, not batches.
+    pub async fn execute_rows(&mut self, sql: &str, rows: Vec<OwnedSqlParams>) -> BatchOutcome {
+        let mut outcome = BatchOutcome::default();
+        for params in rows {
+            // the error is already logged by convert_sqlite_error
+            match self.execute(sql, params_from_iter(params.iter())).await {
+                Ok(_) => outcome.rows_written += 1,
+                Err(_) => outcome.rows_failed += 1,
+            }
+        }
+        outcome
+    }
+
     /// Usable for special cases when quiting transaction is required.
     /// Use only for really special cases that are un-usual like creating tables and similar.
     pub async fn execute_special<P: Params>(
@@ -110,21 +128,19 @@ impl SQLiteExecutor {
 
     fn connect_db(
         path: &Path,
-        cache_size_mb: Option<i64>,
-        mmap_size_mb: Option<u16>,
+        cache_size_mib: Option<i64>,
+        mmap_size_mib: Option<u64>,
     ) -> rusqlite::Result<Connection> {
         let db = Connection::open(path)?;
         db.pragma_update(None, "synchronous", false)?;
         db.pragma_update(None, "journal_mode", "off")?;
         db.pragma_update(None, "locking_mode", "exclusive")?;
         db.pragma_update(None, "temp_store", "memory")?;
-        if let Some(size_mib) = cache_size_mb {
-            let size = size_mib * 1024;
-            db.pragma_update(None, "cache_size", -size)?;
+        if let Some(size_mib) = cache_size_mib {
+            db.pragma_update(None, "cache_size", cache_size_pragma(size_mib))?;
         }
-        if let Some(size_mib) = mmap_size_mb {
-            let size_kb = size_mib * 1024;
-            db.pragma_update(None, "mmap_size", size_kb)?;
+        if let Some(size_mib) = mmap_size_mib {
+            db.pragma_update(None, "mmap_size", mmap_size_pragma(size_mib))?;
         }
         Ok(db)
     }
@@ -140,11 +156,12 @@ impl SQLiteExecutor {
             match msg {
                 DbMessage::Execute {
                     query,
-                    params,
+                    rows,
                     response,
                 } => {
-                    let result = self.execute(&query, params_from_iter(params.iter())).await;
-                    let _ = response.send(result);
+                    let outcome = self.execute_rows(&query, rows).await;
+                    // one acknowledgement for the whole batch
+                    let _ = response.send(outcome);
                 }
                 DbMessage::ExecuteSpecial {
                     query,
@@ -197,5 +214,262 @@ impl SQLiteExecutor {
         let msg = format!("SQLite error at {}: {}", method, err);
         error!("Sqlite error: {}", msg);
         anyhow::Error::msg(msg)
+    }
+}
+
+const BYTES_PER_MIB: u64 = 1024 * 1024;
+
+/// `PRAGMA cache_size` counts pages when positive and *kibibytes* when negative, so a
+/// size in MiB is passed as -(MiB * 1024). Saturating, because the whole workspace is
+/// built with overflow checks on and this comes straight from the command line.
+fn cache_size_pragma(size_mib: i64) -> i64 {
+    size_mib.saturating_mul(1024).saturating_neg()
+}
+
+/// `PRAGMA mmap_size` is in *bytes*. This used to pass MiB * 1024 (kibibytes, 1024x too
+/// small) computed in u16, which overflowed for any size of 64 MiB or more.
+fn mmap_size_pragma(size_mib: u64) -> i64 {
+    i64::try_from(size_mib.saturating_mul(BYTES_PER_MIB)).unwrap_or(i64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db_message::{OwnedSqlParams, OwnedSqlValue};
+    use crate::sql_params;
+    use indicatif::MultiProgress;
+    use rusqlite::ToSql;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use tokio::sync::{mpsc, oneshot};
+
+    const CREATE_TABLE: &str = "CREATE TABLE t (k TEXT NOT NULL PRIMARY KEY, v INTEGER NOT NULL);";
+    const INSERT_ROW: &str = "INSERT OR REPLACE INTO t (k, v) SELECT ?, ?;";
+
+    // A directory of its own per test, removed when the test ends.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "snapshot-parser-tokens-cli-test-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn db_path(&self) -> PathBuf {
+            self.0.join("snapshot.db")
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn row(key: &str, value: Option<i64>) -> OwnedSqlParams {
+        sql_params![key, value]
+    }
+
+    fn counter() -> Arc<ProgressCounter> {
+        Arc::new(ProgressCounter::new(&MultiProgress::new(), "db_execute"))
+    }
+
+    // Runs one executor over the given messages, shuts it down and returns the rows the
+    // promoted DB file ended up with.
+    async fn run_executor(
+        db_path: PathBuf,
+        tx_bulk: Option<u16>,
+        counter: Arc<ProgressCounter>,
+        batches: Vec<Vec<OwnedSqlParams>>,
+    ) -> Vec<BatchOutcome> {
+        let (sender, receiver) = mpsc::channel(8);
+        let executor =
+            SQLiteExecutor::new(db_path, None, None, tx_bulk, counter, receiver).unwrap();
+        let task = tokio::spawn(async move { executor.start().await });
+
+        let (created_tx, created_rx) = oneshot::channel();
+        sender
+            .send(DbMessage::ExecuteSpecial {
+                query: CREATE_TABLE.to_string(),
+                params: vec![],
+                response: created_tx,
+            })
+            .await
+            .unwrap();
+        created_rx.await.unwrap().unwrap();
+
+        let mut outcomes = Vec::new();
+        for rows in batches {
+            let (response_tx, response_rx) = oneshot::channel();
+            sender
+                .send(DbMessage::Execute {
+                    query: INSERT_ROW.to_string(),
+                    rows,
+                    response: response_tx,
+                })
+                .await
+                .unwrap();
+            outcomes.push(response_rx.await.unwrap());
+        }
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        sender
+            .send(DbMessage::Shutdown {
+                response: shutdown_tx,
+            })
+            .await
+            .unwrap();
+        shutdown_rx.await.unwrap().unwrap();
+        drop(sender);
+        task.await.unwrap();
+        outcomes
+    }
+
+    fn stored_rows(db_path: &Path) -> Vec<(String, i64)> {
+        let db = Connection::open(db_path).unwrap();
+        let mut stmt = db.prepare("SELECT k, v FROM t ORDER BY k;").unwrap();
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<(String, i64)>>>()
+            .unwrap();
+        rows
+    }
+
+    // The row-level tolerance of the per-row channel has to survive batching: the
+    // consumer executes the rows of a batch one by one, so a rejected row takes only
+    // itself down.
+    #[tokio::test]
+    async fn a_row_sqlite_rejects_does_not_discard_its_batch() {
+        let dir = TempDir::new();
+        let progress = counter();
+        let outcomes = run_executor(
+            dir.db_path(),
+            None,
+            progress.clone(),
+            // the middle row violates NOT NULL
+            vec![vec![row("a", Some(1)), row("bad", None), row("c", Some(3))]],
+        )
+        .await;
+
+        assert_eq!(
+            outcomes,
+            vec![BatchOutcome {
+                rows_written: 2,
+                rows_failed: 1
+            }]
+        );
+        assert_eq!(
+            stored_rows(&dir.db_path()),
+            vec![("a".to_string(), 1), ("c".to_string(), 3)]
+        );
+        // only the rows that made it into the DB are counted as executed
+        assert_eq!(progress.get(), 2);
+    }
+
+    // One message in, one acknowledgement out, whatever the batch holds.
+    #[tokio::test]
+    async fn every_batch_is_acknowledged_exactly_once() {
+        let dir = TempDir::new();
+        let outcomes = run_executor(
+            dir.db_path(),
+            None,
+            counter(),
+            vec![
+                vec![row("a", Some(1)), row("b", Some(2))],
+                // a partial last batch, as a producer's final flush delivers it
+                vec![row("c", Some(3))],
+            ],
+        )
+        .await;
+
+        assert_eq!(
+            outcomes,
+            vec![
+                BatchOutcome {
+                    rows_written: 2,
+                    rows_failed: 0
+                },
+                BatchOutcome {
+                    rows_written: 1,
+                    rows_failed: 0
+                }
+            ]
+        );
+        assert_eq!(
+            stored_rows(&dir.db_path()),
+            vec![
+                ("a".to_string(), 1),
+                ("b".to_string(), 2),
+                ("c".to_string(), 3)
+            ]
+        );
+    }
+
+    // The transaction bulk counts rows, so a batch bigger than the bulk is committed in
+    // pieces and nothing is left in an open transaction when the DB is promoted.
+    #[tokio::test]
+    async fn a_batch_bigger_than_the_transaction_bulk_is_written_whole() {
+        let dir = TempDir::new();
+        let rows: Vec<OwnedSqlParams> = (0..5)
+            .map(|i| row(&format!("k{i}"), Some(i as i64)))
+            .collect();
+
+        let outcomes = run_executor(dir.db_path(), Some(2), counter(), vec![rows]).await;
+
+        assert_eq!(
+            outcomes,
+            vec![BatchOutcome {
+                rows_written: 5,
+                rows_failed: 0
+            }]
+        );
+        assert_eq!(stored_rows(&dir.db_path()).len(), 5);
+    }
+
+    // SQLite wants bytes; the CLI takes MiB. The old code passed KiB computed in u16, so
+    // --sqlite-mmap-size 64 already overflowed and anything smaller was 1024x too small.
+    #[test]
+    fn mmap_size_is_passed_in_bytes_and_does_not_overflow() {
+        assert_eq!(mmap_size_pragma(0), 0);
+        assert_eq!(mmap_size_pragma(1), 1024 * 1024);
+        assert_eq!(mmap_size_pragma(64), 67_108_864);
+        assert_eq!(mmap_size_pragma(4096), 4_294_967_296);
+        // a size that cannot be expressed in bytes is clamped, never wrapped
+        assert_eq!(mmap_size_pragma(u64::MAX), i64::MAX);
+    }
+
+    // cache_size in MiB is negated kibibytes, which was already right; only the overflow
+    // at the extremes is new.
+    #[test]
+    fn cache_size_is_passed_as_negative_kibibytes() {
+        assert_eq!(cache_size_pragma(0), 0);
+        assert_eq!(cache_size_pragma(1), -1024);
+        assert_eq!(cache_size_pragma(64), -65_536);
+        assert_eq!(cache_size_pragma(4096), -4_194_304);
+        assert_eq!(cache_size_pragma(i64::MAX), i64::MIN + 1);
+    }
+
+    // Both pragmas have to be accepted by SQLite itself, not just computed. 64 MiB is the
+    // smallest size the u16 arithmetic used to overflow on.
+    #[test]
+    fn sqlite_accepts_the_configured_pragmas() {
+        let dir = TempDir::new();
+        let mmap_size = |size_mib| {
+            let db =
+                SQLiteExecutor::connect_db(&dir.db_path(), Some(4096), Some(size_mib)).unwrap();
+            db.pragma_query_value(None, "mmap_size", |row| row.get::<_, i64>(0))
+                .unwrap()
+        };
+
+        assert_eq!(mmap_size(64), 67_108_864);
+        // bigger sizes are capped by SQLITE_MAX_MMAP_SIZE, but must still be memory mapped
+        assert!(mmap_size(4096) >= 67_108_864);
     }
 }

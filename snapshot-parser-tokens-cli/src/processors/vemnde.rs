@@ -1,5 +1,6 @@
 use crate::accounts::{Registrar, Voter};
-use crate::db_message::{DbMessage, OwnedSqlValue};
+use crate::db_message::{DbMessage, OwnedSqlParams, OwnedSqlValue};
+use crate::db_writer::DbWriter;
 use crate::filters::Filters;
 use crate::processors::Processor;
 use crate::progress_bar::ProgressCounter;
@@ -44,6 +45,7 @@ pub fn is_voter_account(account: &AccountSharedData) -> bool {
 pub struct ProcessorVeMnde {
     voter_accounts: Arc<Vec<(Pubkey, AccountSharedData)>>,
     db_sender: Sender<DbMessage>,
+    db_writer: DbWriter,
     vsr_registrar: Registrar,
     vemnde_counter: Arc<ProgressCounter>,
     current_ts: i64,
@@ -62,6 +64,11 @@ impl ProcessorVeMnde {
         let vsr_registrar: Registrar = Registrar::deserialize(vsr_registrar_data)?;
         let processor = Self {
             voter_accounts,
+            db_writer: DbWriter::new(
+                db_sender.clone(),
+                INSERT_VE_MNDE_ACCOUNT_QUERY,
+                vemnde_progress_counter.clone(),
+            ),
             db_sender,
             vemnde_counter: vemnde_progress_counter,
             vsr_registrar,
@@ -96,26 +103,25 @@ impl ProcessorVeMnde {
         );
         for (pubkey, account) in self.voter_accounts.iter() {
             if let Ok(voter_account) = Voter::deserialize(&mut account.data()) {
-                insert_vemnde(
-                    &self.db_sender,
-                    &self.vemnde_counter,
+                match vemnde_row(
                     pubkey,
                     account.owner(),
                     &self.vsr_registrar,
                     &voter_account,
                     self.current_ts,
-                )
-                .await
-                .unwrap_or_else(|e| {
-                    error!("Error: failed to insert voter account {}: {:?}", pubkey, e);
-                    0
-                });
+                ) {
+                    Ok(row) => self.db_writer.push(row).await?,
+                    // an account whose voting power does not add up is skipped, as it was
+                    // when the failure came back from the insert
+                    Err(e) => error!("Error: failed to insert voter account {}: {:?}", pubkey, e),
+                }
             } else {
                 warn!("Error: failed to unpack voter account: {:?}", pubkey);
             }
         }
 
-        Ok(())
+        // the accounts left in the last partial batch
+        self.db_writer.flush().await
     }
 }
 
@@ -135,17 +141,14 @@ impl ProcessorCallback for ProcessorVeMnde {
     }
 }
 
-pub async fn insert_vemnde(
-    db_sender: &Sender<DbMessage>,
-    progress_counter: &Arc<ProgressCounter>,
+/// The parameters of one [`INSERT_VE_MNDE_ACCOUNT_QUERY`] row.
+pub fn vemnde_row(
     pubkey: &Pubkey,
     owner: &Pubkey,
     registrar: &Registrar,
     voter: &Voter,
     current_ts: i64,
-) -> anyhow::Result<usize> {
-    let (response_tx, response_rx) = oneshot::channel();
-
+) -> anyhow::Result<OwnedSqlParams> {
     let voting_power = voter
         .deposits
         .iter()
@@ -157,21 +160,12 @@ pub async fn insert_vemnde(
             )
             .map(|vp| sum.checked_add(vp).unwrap())
         })?;
-    let owned_params = sql_params![
+    Ok(sql_params![
         pubkey.to_string(),
         voter.voter_authority.to_string(),
         voting_power.to_string(),
         owner.to_string(),
-    ];
-    db_sender
-        .send(DbMessage::Execute {
-            query: INSERT_VE_MNDE_ACCOUNT_QUERY.to_string(),
-            params: owned_params,
-            response: response_tx,
-        })
-        .await?;
-    progress_counter.inc();
-    response_rx.await?
+    ])
 }
 
 #[cfg(test)]
