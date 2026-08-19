@@ -7,11 +7,9 @@ use snapshot_parser::bank_loader::create_bank_from_ledger;
 use snapshot_parser::cli::path_parser;
 use snapshot_parser_tokens_cli::db_message::DbMessage;
 use snapshot_parser_tokens_cli::filters::Filters;
-use snapshot_parser_tokens_cli::processors::account_owners::ProcessorAccountOwners;
 use snapshot_parser_tokens_cli::processors::{
-    spawn_processor_task, ProcessorMint, ProcessorNativeStake, ProcessorToken,
-    ProcessorTokenMetadata, ProcessorVeMnde, META_ACCOUNT_TABLE, NATIVE_STAKE_ACCOUNT_TABLE,
-    TOKEN_ACCOUNT_TABLE, TOKEN_METADATA_ACCOUNT_TABLE, VE_MNDE_ACCOUNT_TABLE,
+    spawn_processor_task, ProcessorMint, ProcessorNativeStake, ProcessorToken, ProcessorVeMnde,
+    NATIVE_STAKE_ACCOUNT_TABLE, TOKEN_ACCOUNT_TABLE, VE_MNDE_ACCOUNT_TABLE,
 };
 use snapshot_parser_tokens_cli::progress_bar::ProgressCounter;
 use snapshot_parser_tokens_cli::stats::Stats;
@@ -90,10 +88,7 @@ async fn main() -> anyhow::Result<()> {
     let stats = Stats::new();
     let multi_progress = MultiProgress::new();
     let db_progress_counter = define_counter("db_execute", &multi_progress, &stats).await;
-    let account_owners_counter = define_counter(META_ACCOUNT_TABLE, &multi_progress, &stats).await;
     let token_counter = define_counter(TOKEN_ACCOUNT_TABLE, &multi_progress, &stats).await;
-    let token_metadata_counter =
-        define_counter(TOKEN_METADATA_ACCOUNT_TABLE, &multi_progress, &stats).await;
     let vemnde_counter = define_counter(VE_MNDE_ACCOUNT_TABLE, &multi_progress, &stats).await;
     let native_stake_counter =
         define_counter(NATIVE_STAKE_ACCOUNT_TABLE, &multi_progress, &stats).await;
@@ -126,23 +121,11 @@ async fn main() -> anyhow::Result<()> {
         .await
         .expect("Failed to receive SQLite ready signal");
 
-    let account_owners_handle = spawn_processor_task(
-        ProcessorAccountOwners::new(
-            bank.clone(),
-            sender.clone(),
-            &filters,
-            account_owners_counter.clone(),
-        )
-        .await?,
-    )
-    .await?;
-
     let token_handle = spawn_processor_task(
         ProcessorToken::new(
             bank.clone(),
             sender.clone(),
             &filters,
-            account_owners_counter,
             token_counter.clone(),
         )
         .await?,
@@ -171,19 +154,11 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
-    let token_metadata_handle = spawn_processor_task(
-        ProcessorTokenMetadata::new(bank.clone(), sender.clone(), token_metadata_counter.clone())
-            .await?,
-    )
-    .await?;
-
     let _ = tokio::join!(
-        account_owners_handle,
         token_handle,
         mint_handle,
         vemnde_handle,
-        native_stake_handle,
-        token_metadata_handle,
+        native_stake_handle
     );
 
     let (response_tx, response_rx) = oneshot::channel();

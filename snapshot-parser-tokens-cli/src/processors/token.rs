@@ -1,6 +1,6 @@
 use crate::db_message::{DbMessage, OwnedSqlValue};
 use crate::filters::Filters;
-use crate::processors::{insert_account_meta, Processor};
+use crate::processors::Processor;
 use crate::progress_bar::ProgressCounter;
 use crate::sql_params;
 use crate::stats::ProcessorCallback;
@@ -25,7 +25,6 @@ pub struct ProcessorToken {
     bank: Arc<Bank>,
     db_sender: Sender<DbMessage>,
     mints: Vec<Pubkey>,
-    account_owners_counter: Arc<ProgressCounter>,
     token_counter: Arc<ProgressCounter>,
 }
 
@@ -34,14 +33,12 @@ impl ProcessorToken {
         bank: Arc<Bank>,
         db_sender: Sender<DbMessage>,
         filters: &Filters,
-        account_owners_progress_counter: Arc<ProgressCounter>,
         token_progress_counter: Arc<ProgressCounter>,
     ) -> anyhow::Result<Self> {
         let mints = filters.account_mints.clone();
         let processor = Self {
             bank,
             db_sender,
-            account_owners_counter: account_owners_progress_counter,
             token_counter: token_progress_counter,
             mints,
         };
@@ -99,13 +96,6 @@ impl ProcessorToken {
         debug!("Token processor loaded {} accounts", token_accounts.len());
         for (pubkey, account) in token_accounts {
             let token_account = spl_token::state::Account::unpack(account.data())?;
-            insert_account_meta(
-                &self.db_sender,
-                &self.account_owners_counter,
-                &pubkey,
-                &account,
-            )
-            .await?;
             insert_token(
                 &self.db_sender,
                 &self.token_counter,

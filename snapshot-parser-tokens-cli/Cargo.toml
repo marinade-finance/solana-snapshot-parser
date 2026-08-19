@@ -19,7 +19,6 @@ clap = { workspace = true }
 env_logger = { workspace = true }
 indicatif = { workspace = true }
 log = { workspace = true }
-mpl-token-metadata = { workspace = true }
 rusqlite = {workspace = true }
 serde = { workspace = true }
 snapshot-parser = { workspace = true }
