@@ -6,7 +6,9 @@ pub type OwnedSqlParams = Vec<Box<dyn ToSql + Send + Sync>>;
 
 /// What one [`DbMessage::Execute`] batch did. The batch removes the channel round-trip
 /// per row, not the per-row execution: the consumer still runs every row on its own, so
-/// a row SQLite rejects only counts itself as failed and its neighbours still land.
+/// a row SQLite rejects only counts itself as failed and its neighbours still land. The
+/// consumer keeps a running total of the failures and refuses to promote the DB if any
+/// row was lost, so the run fails once at the end instead of aborting mid-write.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct BatchOutcome {
     pub rows_written: usize,

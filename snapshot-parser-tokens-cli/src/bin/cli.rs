@@ -185,17 +185,27 @@ async fn main() -> anyhow::Result<()> {
             response: response_tx,
         })
         .await?;
-    // finalize() commits the tail and renames the temporary DB onto the output path, so a
-    // failure here means there is no complete DB at that path: it must fail the run rather
-    // than exit 0 and let the manager ingest whatever was already there.
+    // finalize() commits the tail, refuses to promote a DB that lost rows, and otherwise
+    // renames the temporary DB onto the output path. A failure here means there is no
+    // complete DB at that path: it must fail the run rather than exit 0 and let the
+    // manager ingest whatever was already there.
     response_rx.await??;
     drop(sender);
+    // the executor owns its rusqlite Connection and is dropped when start() returns, so
+    // sqlite3_close() has run by the time this handle resolves: nothing is buffered in
+    // the process any more, the committed pages are in the file the rename published.
     db_handle.await??;
     let _ = multi_progress;
 
     stats.print_info().await;
 
-    Ok(())
+    info!("Finished.");
+    log::logger().flush();
+
+    // The DB is written, closed and promoted, so skip the accounts-db teardown of a dying
+    // process: dropping the bank idled ~4 minutes here (manager builds 1196-1198). Only
+    // the success path exits this way; every failure above returns and unwinds normally.
+    std::process::exit(0);
 }
 
 async fn define_counter(

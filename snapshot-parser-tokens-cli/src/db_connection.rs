@@ -16,6 +16,9 @@ pub struct SQLiteExecutor {
     transaction_batch_counter: u16,
 
     db_execute_counter: Arc<ProgressCounter>,
+    /// Rows SQLite refused over the whole run; [`Self::finalize`] refuses to promote a DB
+    /// that lost any of them.
+    rows_rejected: usize,
 
     receiver: Receiver<DbMessage>,
     shut_down: bool,
@@ -48,6 +51,7 @@ impl SQLiteExecutor {
             tx_bulk,
             transaction_batch_counter: 0,
             db_execute_counter,
+            rows_rejected: 0,
             receiver,
             shut_down: false,
         })
@@ -93,6 +97,11 @@ impl SQLiteExecutor {
     /// one, so a row SQLite rejects is logged and skipped exactly as it was when every
     /// row travelled on its own, and its neighbours in the batch still land. The
     /// transaction bulk therefore keeps counting rows, not batches.
+    ///
+    /// A rejected row never aborts the run mid-write - the other producers are still
+    /// writing, and killing them here would leave a half-written DB behind. The rejects
+    /// are tallied instead, and [`Self::finalize`] decides once, at the end, whether the
+    /// DB is worth promoting.
     pub async fn execute_rows(&mut self, sql: &str, rows: Vec<OwnedSqlParams>) -> BatchOutcome {
         let mut outcome = BatchOutcome::default();
         for params in rows {
@@ -102,6 +111,7 @@ impl SQLiteExecutor {
                 Err(_) => outcome.rows_failed += 1,
             }
         }
+        self.rows_rejected = self.rows_rejected.saturating_add(outcome.rows_failed);
         outcome
     }
 
@@ -190,6 +200,24 @@ impl SQLiteExecutor {
             self.commit_db("finalize");
         }
 
+        // A single rejected row fails the run, rather than a share of them: none of the
+        // rows the processors push can be rejected on its own merits any more. Accounts
+        // that do not unpack are filtered out before the push, a voting power that does
+        // not add up is skipped by its processor, every NOT NULL column is filled by
+        // construction, and every statement is an INSERT OR REPLACE, so a repeated pubkey
+        // replaces instead of conflicting. What is left to reject a row is the storage
+        // failing underneath the run - a full disk, an I/O error, corruption - which hits
+        // an arbitrary number of rows and leaves a DB that is silently short. Promoting
+        // that is worse than failing: the manager cannot tell it from a complete one.
+        if self.rows_rejected > 0 {
+            anyhow::bail!(
+                "SQLite rejected {} rows during the run, \
+                 refusing to promote an incomplete DB to {:?}",
+                self.rows_rejected,
+                self.db_path
+            );
+        }
+
         // second, promote the DB file as finished
         let db_path = self.db_path.clone();
         self.db_temp_guard.promote(db_path)?;
@@ -264,6 +292,11 @@ mod tests {
         fn db_path(&self) -> PathBuf {
             self.0.join("snapshot.db")
         }
+
+        // the name SQLiteExecutor::new derives for the file it writes before promoting
+        fn temp_db_path(&self) -> PathBuf {
+            self.0.join("_snapshot.db.tmp")
+        }
     }
 
     impl Drop for TempDir {
@@ -280,14 +313,15 @@ mod tests {
         Arc::new(ProgressCounter::new(&MultiProgress::new(), "db_execute"))
     }
 
-    // Runs one executor over the given messages, shuts it down and returns the rows the
-    // promoted DB file ended up with.
+    // Runs one executor over the given messages and shuts it down, returning what each
+    // batch reported and what the shutdown (finalize) answered. The executor is dropped
+    // before returning, so its temporary file guard has already had its say.
     async fn run_executor(
         db_path: PathBuf,
         tx_bulk: Option<u16>,
         counter: Arc<ProgressCounter>,
         batches: Vec<Vec<OwnedSqlParams>>,
-    ) -> Vec<BatchOutcome> {
+    ) -> (Vec<BatchOutcome>, anyhow::Result<()>) {
         let (sender, receiver) = mpsc::channel(8);
         let executor =
             SQLiteExecutor::new(db_path, None, None, tx_bulk, counter, receiver).unwrap();
@@ -325,10 +359,10 @@ mod tests {
             })
             .await
             .unwrap();
-        shutdown_rx.await.unwrap().unwrap();
+        let finalized = shutdown_rx.await.unwrap();
         drop(sender);
         task.await.unwrap();
-        outcomes
+        (outcomes, finalized)
     }
 
     fn stored_rows(db_path: &Path) -> Vec<(String, i64)> {
@@ -344,12 +378,12 @@ mod tests {
 
     // The row-level tolerance of the per-row channel has to survive batching: the
     // consumer executes the rows of a batch one by one, so a rejected row takes only
-    // itself down.
+    // itself down *while the run is going on*. The verdict is passed once, at finalize.
     #[tokio::test]
     async fn a_row_sqlite_rejects_does_not_discard_its_batch() {
         let dir = TempDir::new();
         let progress = counter();
-        let outcomes = run_executor(
+        let (outcomes, finalized) = run_executor(
             dir.db_path(),
             None,
             progress.clone(),
@@ -365,19 +399,69 @@ mod tests {
                 rows_failed: 1
             }]
         );
-        assert_eq!(
-            stored_rows(&dir.db_path()),
-            vec![("a".to_string(), 1), ("c".to_string(), 3)]
-        );
         // only the rows that made it into the DB are counted as executed
         assert_eq!(progress.get(), 2);
+        // the neighbours landed, so the run went on - but the DB is short of a row
+        finalized.expect_err("a run that lost a row must not be finalized");
+    }
+
+    // A DB that is missing rows must not reach the manager: it is indistinguishable from
+    // a complete one, so the run fails and takes its temporary file with it.
+    #[tokio::test]
+    async fn a_rejected_row_refuses_to_promote_the_db() {
+        let dir = TempDir::new();
+        let (_, finalized) = run_executor(
+            dir.db_path(),
+            Some(2),
+            counter(),
+            vec![
+                vec![row("a", Some(1)), row("bad", None)],
+                vec![row("worse", None), row("c", Some(3))],
+            ],
+        )
+        .await;
+
+        let err = finalized.expect_err("a run that lost rows must not be promoted");
+        assert!(
+            err.to_string().contains("rejected 2 rows"),
+            "the error must name how many rows were lost: {err}"
+        );
+        assert!(
+            !dir.db_path().exists(),
+            "the output path must be left untouched"
+        );
+        assert!(
+            !dir.temp_db_path().exists(),
+            "the unpromoted temporary DB must be cleaned up"
+        );
+    }
+
+    // The other side of the same rule: a run that lost nothing lands on the output path
+    // and leaves no temporary file behind.
+    #[tokio::test]
+    async fn a_run_without_rejects_promotes_the_db() {
+        let dir = TempDir::new();
+        let (_, finalized) = run_executor(
+            dir.db_path(),
+            Some(2),
+            counter(),
+            vec![vec![row("a", Some(1)), row("b", Some(2))]],
+        )
+        .await;
+
+        finalized.expect("a run without a single rejected row must be promoted");
+        assert_eq!(
+            stored_rows(&dir.db_path()),
+            vec![("a".to_string(), 1), ("b".to_string(), 2)]
+        );
+        assert!(!dir.temp_db_path().exists());
     }
 
     // One message in, one acknowledgement out, whatever the batch holds.
     #[tokio::test]
     async fn every_batch_is_acknowledged_exactly_once() {
         let dir = TempDir::new();
-        let outcomes = run_executor(
+        let (outcomes, finalized) = run_executor(
             dir.db_path(),
             None,
             counter(),
@@ -389,6 +473,7 @@ mod tests {
         )
         .await;
 
+        finalized.unwrap();
         assert_eq!(
             outcomes,
             vec![
@@ -421,8 +506,10 @@ mod tests {
             .map(|i| row(&format!("k{i}"), Some(i as i64)))
             .collect();
 
-        let outcomes = run_executor(dir.db_path(), Some(2), counter(), vec![rows]).await;
+        let (outcomes, finalized) =
+            run_executor(dir.db_path(), Some(2), counter(), vec![rows]).await;
 
+        finalized.unwrap();
         assert_eq!(
             outcomes,
             vec![BatchOutcome {

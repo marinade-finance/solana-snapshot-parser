@@ -20,7 +20,8 @@ pub const DB_BATCH_SIZE: usize = 5000;
 /// Error semantics match the per-row path this replaces: a row SQLite rejects is logged
 /// and skipped (by the consumer, which executes rows individually), while losing the
 /// channel or the acknowledgement is fatal for the producer - the consumer is gone, so
-/// every later row would be dropped silently.
+/// every later row would be dropped silently. Skipped is not forgiven, only deferred:
+/// the consumer counts the rejects and refuses to promote the DB at finalize.
 pub struct DbWriter {
     db_sender: Sender<DbMessage>,
     query: &'static str,
@@ -198,7 +199,8 @@ mod tests {
         }
         writer.flush().await.unwrap();
 
-        // two batches, one acknowledgement each, and neither rejected row stopped the producer
+        // two batches, one acknowledgement each, and neither rejected row stopped the
+        // producer: the run is only failed later, by the consumer's finalize
         drop(writer);
         assert_eq!(collector.await.unwrap(), vec![3, 3]);
         assert_eq!(progress.get(), 6);
