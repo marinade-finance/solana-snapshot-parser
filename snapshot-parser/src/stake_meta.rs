@@ -52,17 +52,9 @@ pub struct StakeMetaCollection {
     pub stake_metas: Vec<StakeMeta>,
 }
 
-fn load_stake_accounts(bank: &Arc<Bank>) -> anyhow::Result<Vec<(Pubkey, AccountSharedData)>> {
-    let stake_accounts_raw = bank.get_program_accounts(&solana_stake_interface::program::ID)?;
-    info!("Stake processors loaded: {}", stake_accounts_raw.len());
-
-    Ok(stake_accounts_raw)
-}
-
-pub fn generate_stake_meta_collection(bank: &Arc<Bank>) -> anyhow::Result<StakeMetaCollection> {
-    generate_stake_meta_collection_for_accounts(bank, &load_stake_accounts(bank)?)
-}
-
+// The stake accounts come from account_scan::scan_accounts_by_owner, which sweeps the
+// storages once for every owner the caller needs. Loading them here instead would mean
+// another full walk of the accounts index, which is what that scan exists to avoid.
 pub fn generate_stake_meta_collection_for_accounts(
     bank: &Arc<Bank>,
     stake_accounts: &[(Pubkey, AccountSharedData)],

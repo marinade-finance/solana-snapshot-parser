@@ -11,8 +11,7 @@ use borsh::BorshDeserialize;
 use log::{debug, error, warn};
 use rusqlite::ToSql;
 use solana_program::pubkey::Pubkey;
-use solana_runtime::bank::Bank;
-use solana_sdk::account::ReadableAccount;
+use solana_sdk::account::{AccountSharedData, ReadableAccount};
 use std::future::Future;
 use std::str::FromStr;
 use std::string::ToString;
@@ -25,10 +24,26 @@ pub const INSERT_VE_MNDE_ACCOUNT_QUERY: &str = "INSERT OR REPLACE INTO vemnde_ac
 const MARINADE_VSR_PROGRAM_ADDR: &str = "VoteMBhDCqGLRgYpp9o7DGyq81KNmwjXQRAHStjtJsS";
 const VOTER_ACCOUNT_LEN: usize = 2728;
 
+pub fn marinade_vsr_program_id() -> anyhow::Result<Pubkey> {
+    Pubkey::from_str(MARINADE_VSR_PROGRAM_ADDR).map_err(|e| {
+        anyhow!(
+            "Cannot pars VSR program address {}: {:?}",
+            MARINADE_VSR_PROGRAM_ADDR,
+            e
+        )
+    })
+}
+
+// Selects the VSR accounts the processor stores: a Voter account is recognised by its
+// size alone, exactly as it was when this ran as the filter of
+// get_filtered_program_accounts. Whether it deserialises is decided later, per account.
+pub fn is_voter_account(account: &AccountSharedData) -> bool {
+    matches!(account.data().len(), VOTER_ACCOUNT_LEN)
+}
+
 pub struct ProcessorVeMnde {
-    bank: Arc<Bank>,
+    voter_accounts: Arc<Vec<(Pubkey, AccountSharedData)>>,
     db_sender: Sender<DbMessage>,
-    marinade_vsr_program_addr: Pubkey,
     vsr_registrar: Registrar,
     vemnde_counter: Arc<ProgressCounter>,
     current_ts: i64,
@@ -36,7 +51,7 @@ pub struct ProcessorVeMnde {
 
 impl ProcessorVeMnde {
     pub async fn new(
-        bank: Arc<Bank>,
+        voter_accounts: Arc<Vec<(Pubkey, AccountSharedData)>>,
         db_sender: Sender<DbMessage>,
         filters: &Filters,
         vemnde_progress_counter: Arc<ProgressCounter>,
@@ -46,17 +61,8 @@ impl ProcessorVeMnde {
         let vsr_registrar_data: &mut &[u8] = &mut vsr_registrar_vec.as_slice();
         let vsr_registrar: Registrar = Registrar::deserialize(vsr_registrar_data)?;
         let processor = Self {
-            bank,
+            voter_accounts,
             db_sender,
-            marinade_vsr_program_addr: Pubkey::from_str(MARINADE_VSR_PROGRAM_ADDR).map_err(
-                |e| {
-                    anyhow!(
-                        "Cannot pars VSR program address {}: {:?}",
-                        MARINADE_VSR_PROGRAM_ADDR,
-                        e
-                    )
-                },
-            )?,
             vemnde_counter: vemnde_progress_counter,
             vsr_registrar,
             current_ts,
@@ -84,24 +90,16 @@ impl ProcessorVeMnde {
     }
 
     pub async fn process(&mut self) -> anyhow::Result<()> {
-        debug!("Loading VSR registrar accounts from bank...");
-
-        let vsr_voter_accounts = self
-            .bank
-            .get_filtered_program_accounts(&self.marinade_vsr_program_addr, |account_data| {
-                matches!(account_data.data().len(), VOTER_ACCOUNT_LEN)
-            })?;
-
         debug!(
-            "VeMMNDE processor loaded {} Voter accounts",
-            vsr_voter_accounts.len()
+            "VeMMNDE processor got {} Voter accounts from the scan",
+            self.voter_accounts.len()
         );
-        for (pubkey, account) in vsr_voter_accounts {
+        for (pubkey, account) in self.voter_accounts.iter() {
             if let Ok(voter_account) = Voter::deserialize(&mut account.data()) {
                 insert_vemnde(
                     &self.db_sender,
                     &self.vemnde_counter,
-                    &pubkey,
+                    pubkey,
                     account.owner(),
                     &self.vsr_registrar,
                     &voter_account,
@@ -174,4 +172,30 @@ pub async fn insert_vemnde(
         .await?;
     progress_counter.inc();
     response_rx.await?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::account::Account;
+
+    fn account_of(data_len: usize) -> AccountSharedData {
+        AccountSharedData::from(Account {
+            lamports: 1,
+            data: vec![0u8; data_len],
+            owner: marinade_vsr_program_id().unwrap(),
+            executable: false,
+            rent_epoch: 0,
+        })
+    }
+
+    // Size is the whole test: a Voter account that does not deserialize is still scanned,
+    // and only warned about later, exactly as before.
+    #[test]
+    fn voter_accounts_are_recognised_by_size_alone() {
+        assert!(is_voter_account(&account_of(VOTER_ACCOUNT_LEN)));
+        assert!(!is_voter_account(&account_of(VOTER_ACCOUNT_LEN - 1)));
+        assert!(!is_voter_account(&account_of(VOTER_ACCOUNT_LEN + 1)));
+        assert!(!is_voter_account(&account_of(0)));
+    }
 }

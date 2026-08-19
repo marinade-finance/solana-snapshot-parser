@@ -7,9 +7,10 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use log::{debug, error};
 use rusqlite::ToSql;
-use snapshot_parser::stake_meta::generate_stake_meta_collection;
+use snapshot_parser::stake_meta::generate_stake_meta_collection_for_accounts;
 use solana_program::pubkey::Pubkey;
 use solana_runtime::bank::Bank;
+use solana_sdk::account::AccountSharedData;
 use std::future::Future;
 use std::str::FromStr;
 use std::string::ToString;
@@ -23,6 +24,7 @@ const MARINADE_NATIVE_STAKE_AUTHORITY_ADDR: &str = "stWirqFCf2Uts1JBL1Jsd3r6VBWh
 
 pub struct ProcessorNativeStake {
     bank: Arc<Bank>,
+    stake_accounts: Arc<Vec<(Pubkey, AccountSharedData)>>,
     db_sender: Sender<DbMessage>,
     native_stake_counter: Arc<ProgressCounter>,
     native_stake_authority: Pubkey,
@@ -31,6 +33,7 @@ pub struct ProcessorNativeStake {
 impl ProcessorNativeStake {
     pub async fn new(
         bank: Arc<Bank>,
+        stake_accounts: Arc<Vec<(Pubkey, AccountSharedData)>>,
         db_sender: Sender<DbMessage>,
         native_stake_counter: Arc<ProgressCounter>,
     ) -> anyhow::Result<Self> {
@@ -44,6 +47,7 @@ impl ProcessorNativeStake {
             })?;
         let processor = Self {
             bank,
+            stake_accounts,
             db_sender,
             native_stake_counter,
             native_stake_authority,
@@ -71,10 +75,12 @@ impl ProcessorNativeStake {
 
     pub async fn process(&mut self) -> anyhow::Result<()> {
         debug!(
-            "Loading staking accounts for native staking authority {} from bank...",
-            self.native_stake_authority
+            "Building stake metas for native staking authority {} from {} scanned accounts...",
+            self.native_stake_authority,
+            self.stake_accounts.len()
         );
-        let stake_accounts = generate_stake_meta_collection(&self.bank)?;
+        let stake_accounts =
+            generate_stake_meta_collection_for_accounts(&self.bank, &self.stake_accounts)?;
 
         for stake_meta in stake_accounts.stake_metas.iter() {
             if stake_meta.stake_authority == self.native_stake_authority {

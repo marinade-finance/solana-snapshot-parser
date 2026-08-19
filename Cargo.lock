@@ -5127,6 +5127,7 @@ dependencies = [
  "solana-program",
  "solana-runtime",
  "solana-sdk",
+ "solana-stake-interface",
  "spl-token",
  "tokio",
 ]

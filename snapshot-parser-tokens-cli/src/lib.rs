@@ -4,5 +4,6 @@ pub mod db_message;
 pub mod filters;
 pub mod processors;
 pub mod progress_bar;
+pub mod scanned_accounts;
 pub mod stats;
 pub mod temp_file;

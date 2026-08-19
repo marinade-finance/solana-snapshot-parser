@@ -12,6 +12,7 @@ use snapshot_parser_tokens_cli::processors::{
     NATIVE_STAKE_ACCOUNT_TABLE, TOKEN_ACCOUNT_TABLE, VE_MNDE_ACCOUNT_TABLE,
 };
 use snapshot_parser_tokens_cli::progress_bar::ProgressCounter;
+use snapshot_parser_tokens_cli::scanned_accounts::scan_required_accounts;
 use snapshot_parser_tokens_cli::stats::Stats;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -84,6 +85,12 @@ async fn main() -> anyhow::Result<()> {
         bank.unix_timestamp_from_genesis()
     );
 
+    // One pass over the storage files for every owner the processors need, before any of
+    // them starts: three index walks used to cost ~64 minutes here. Nothing else runs on
+    // the runtime yet, so blocking it with the scan costs no concurrency.
+    info!("Scanning accounts from the bank...");
+    let scanned_accounts = scan_required_accounts(&bank, &filters)?;
+
     info!("Creating progress bar instance...");
     let stats = Stats::new();
     let multi_progress = MultiProgress::new();
@@ -122,10 +129,10 @@ async fn main() -> anyhow::Result<()> {
         .expect("Failed to receive SQLite ready signal");
 
     let token_handle = spawn_processor_task(
+        // each list is moved into its processor, so it is freed as soon as that one is done
         ProcessorToken::new(
-            bank.clone(),
+            scanned_accounts.token,
             sender.clone(),
-            &filters,
             token_counter.clone(),
         )
         .await?,
@@ -139,7 +146,7 @@ async fn main() -> anyhow::Result<()> {
 
     let vemnde_handle = spawn_processor_task(
         ProcessorVeMnde::new(
-            bank.clone(),
+            scanned_accounts.voter,
             sender.clone(),
             &filters,
             vemnde_counter,
@@ -150,7 +157,13 @@ async fn main() -> anyhow::Result<()> {
     .await?;
 
     let native_stake_handle = spawn_processor_task(
-        ProcessorNativeStake::new(bank.clone(), sender.clone(), native_stake_counter).await?,
+        ProcessorNativeStake::new(
+            bank.clone(),
+            scanned_accounts.stake,
+            sender.clone(),
+            native_stake_counter,
+        )
+        .await?,
     )
     .await?;
 

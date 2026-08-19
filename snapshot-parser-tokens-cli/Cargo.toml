@@ -26,5 +26,6 @@ solana-accounts-db = { workspace = true }
 solana-program = { workspace = true }
 solana-runtime = { workspace = true }
 solana-sdk = { workspace = true }
+solana-stake-interface = { workspace = true }
 spl-token = { workspace = true }
 tokio = { workspace = true }
