@@ -14,8 +14,6 @@ pub struct ScannedAccounts {
     pub stake: Arc<Vec<(Pubkey, AccountSharedData)>>,
 }
 
-// The predicates run inside the scan: the SPL-token population is far too large to
-// collect first and filter afterwards
 pub fn scan_required_accounts(
     bank: &Arc<Bank>,
     filters: &Filters,

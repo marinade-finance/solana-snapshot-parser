@@ -86,8 +86,7 @@ async fn main() -> anyhow::Result<()> {
         bank.unix_timestamp_from_genesis()
     );
 
-    // One pass over the storages for every owner; three index walks cost ~64 minutes here
-    info!("Scanning accounts from the bank...");
+    info!("Scanning accounts from the bank in a single pass over the storages...");
     let scanned_accounts = scan_required_accounts(&bank, &filters)?;
 
     info!("Creating progress bar instance...");
@@ -165,7 +164,6 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
-    // Fail before the shutdown below, so a truncated DB is never promoted
     join_processor_tasks([
         token_handle,
         mint_handle,
@@ -190,7 +188,6 @@ async fn main() -> anyhow::Result<()> {
     info!("Finished.");
     log::logger().flush();
 
-    // The DB is written, closed and promoted, so skip the accounts-db teardown of a dying process
     std::process::exit(0);
 }
 

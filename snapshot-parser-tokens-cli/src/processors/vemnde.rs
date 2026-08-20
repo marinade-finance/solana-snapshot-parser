@@ -35,8 +35,6 @@ pub fn marinade_vsr_program_id() -> anyhow::Result<Pubkey> {
     })
 }
 
-// A Voter account is recognised by size alone, as it was in the bank filter; whether it
-// deserialises is decided later, per account
 pub fn is_voter_account(account: &AccountSharedData) -> bool {
     matches!(account.data().len(), VOTER_ACCOUNT_LEN)
 }
@@ -110,8 +108,10 @@ impl ProcessorVeMnde {
                     self.current_ts,
                 ) {
                     Ok(row) => self.db_writer.push(row).await?,
-                    // a voting power that does not add up is skipped, not fatal
-                    Err(e) => error!("Error: failed to insert voter account {}: {:?}", pubkey, e),
+                    Err(e) => error!(
+                        "Error: skipping voter account {} whose voting power does not add up: {:?}",
+                        pubkey, e
+                    ),
                 }
             } else {
                 warn!("Error: failed to unpack voter account: {:?}", pubkey);

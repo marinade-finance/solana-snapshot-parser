@@ -6,8 +6,6 @@ use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 
-/// Big enough to amortise the channel round-trip that dominated the write path (2.31x),
-/// small enough that the at most one outstanding batch per producer stays cheap.
 pub const DB_BATCH_SIZE: usize = 5000;
 
 pub struct DbWriter {
@@ -44,7 +42,6 @@ impl DbWriter {
 
     pub async fn push(&mut self, row: OwnedSqlParams) -> anyhow::Result<()> {
         self.rows.push(row);
-        // counts rows handed over, not rows SQLite accepted
         self.progress_counter.inc();
         if self.rows.len() >= self.batch_size {
             self.flush().await?;
@@ -52,7 +49,6 @@ impl DbWriter {
         Ok(())
     }
 
-    /// Must be called once the producer is done; Drop cannot flush.
     pub async fn flush(&mut self) -> anyhow::Result<()> {
         if self.rows.is_empty() {
             return Ok(());
@@ -158,11 +154,14 @@ mod tests {
         assert_eq!(writer.rows.len(), 1);
 
         writer.flush().await.unwrap();
-        // flushing again must not ship an empty batch
         writer.flush().await.unwrap();
 
         drop(writer);
-        assert_eq!(collector.await.unwrap(), vec![4, 1]);
+        assert_eq!(
+            collector.await.unwrap(),
+            vec![4, 1],
+            "flushing again must not ship an empty batch"
+        );
     }
 
     #[tokio::test]
@@ -179,7 +178,11 @@ mod tests {
 
         drop(writer);
         assert_eq!(collector.await.unwrap(), vec![3, 3]);
-        assert_eq!(progress.get(), 6);
+        assert_eq!(
+            progress.get(),
+            6,
+            "progress counts rows handed over, not rows SQLite accepted"
+        );
     }
 
     #[tokio::test]
@@ -203,7 +206,6 @@ mod tests {
     async fn a_missing_acknowledgement_fails_the_producer() {
         let (sender, mut receiver) = mpsc::channel(4);
         tokio::spawn(async move {
-            // takes the batch, then drops the response sender without answering
             let _ = receiver.recv().await;
         });
         let mut writer = DbWriter::with_batch_size(sender, QUERY, counter(), 1);

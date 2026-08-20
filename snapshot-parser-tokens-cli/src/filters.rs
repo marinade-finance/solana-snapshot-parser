@@ -9,7 +9,6 @@ use std::str::FromStr;
 
 #[derive(Debug, Deserialize, Serialize)]
 struct FiltersData {
-    /// Deprecated and ignored; deployed solana-snapshot-managers still emit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     account_owners: Option<String>,
     account_mints: String,
@@ -61,7 +60,6 @@ mod tests {
     const SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
     const MSOL_MINT: &str = "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So";
 
-    // A fixed name in the shared temp dir collides between concurrent test runs on one host
     struct TempJson(PathBuf);
 
     impl TempJson {

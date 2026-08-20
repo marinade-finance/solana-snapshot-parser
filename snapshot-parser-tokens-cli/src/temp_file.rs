@@ -10,8 +10,6 @@ impl TempFileGuard {
         Self { path: Some(path) }
     }
 
-    /// The guard keeps owning the temporary file until the rename succeeded, so a failed
-    /// promotion still removes it on drop.
     pub fn promote<P: AsRef<Path>>(&mut self, new_name: P) -> std::io::Result<()> {
         let path = self
             .path
@@ -83,7 +81,6 @@ mod tests {
         let dir = temp_dir();
         let temp = dir.join("_snapshot.db.tmp");
         std::fs::write(&temp, b"db").unwrap();
-        // renaming onto a non-empty directory fails on every supported platform
         let occupied = dir.join("occupied");
         std::fs::create_dir(&occupied).unwrap();
         std::fs::write(occupied.join("child"), b"x").unwrap();

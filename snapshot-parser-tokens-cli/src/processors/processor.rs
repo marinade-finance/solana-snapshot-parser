@@ -30,7 +30,6 @@ pub async fn spawn_processor_task<P: Processor + Send + 'static>(
     Ok(ProcessorTask::new(P::name(), handle))
 }
 
-/// Every task is awaited before returning, so no processor is killed mid-write.
 pub async fn join_processor_tasks(
     tasks: impl IntoIterator<Item = ProcessorTask>,
 ) -> anyhow::Result<()> {

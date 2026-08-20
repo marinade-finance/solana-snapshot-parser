@@ -89,11 +89,9 @@ impl SQLiteExecutor {
         Ok(result)
     }
 
-    /// Rows are executed one by one, so a rejected row is only tallied; finalize decides.
     pub async fn execute_rows(&mut self, sql: &str, rows: Vec<OwnedSqlParams>) -> BatchOutcome {
         let mut outcome = BatchOutcome::default();
         for params in rows {
-            // the error is already logged by convert_sqlite_error
             match self.execute(sql, params_from_iter(params.iter())).await {
                 Ok(_) => outcome.rows_written += 1,
                 Err(_) => outcome.rows_failed += 1,
@@ -187,8 +185,6 @@ impl SQLiteExecutor {
             self.commit_db("finalize");
         }
 
-        // A DB that is silently short is indistinguishable from a complete one, so a single
-        // rejected row fails the run
         if self.rows_rejected > 0 {
             anyhow::bail!(
                 "SQLite rejected {} rows during the run, \
@@ -227,12 +223,10 @@ impl SQLiteExecutor {
 
 const BYTES_PER_MIB: u64 = 1024 * 1024;
 
-/// `PRAGMA cache_size` counts pages when positive and kibibytes when negative.
 fn cache_size_pragma(size_mib: i64) -> i64 {
     size_mib.saturating_mul(1024).saturating_neg()
 }
 
-/// `PRAGMA mmap_size` is in bytes.
 fn mmap_size_pragma(size_mib: u64) -> i64 {
     i64::try_from(size_mib.saturating_mul(BYTES_PER_MIB)).unwrap_or(i64::MAX)
 }
@@ -269,7 +263,6 @@ mod tests {
             self.0.join("snapshot.db")
         }
 
-        // the name SQLiteExecutor::new derives for the file it writes before promoting
         fn temp_db_path(&self) -> PathBuf {
             self.0.join("_snapshot.db.tmp")
         }
@@ -357,7 +350,6 @@ mod tests {
             dir.db_path(),
             None,
             progress.clone(),
-            // the middle row violates NOT NULL
             vec![vec![row("a", Some(1)), row("bad", None), row("c", Some(3))]],
         )
         .await;
@@ -459,7 +451,6 @@ mod tests {
         );
     }
 
-    // The transaction bulk counts rows, so a batch bigger than it is committed in pieces
     #[tokio::test]
     async fn a_batch_bigger_than_the_transaction_bulk_is_written_whole() {
         let dir = TempDir::new();
@@ -510,7 +501,9 @@ mod tests {
         };
 
         assert_eq!(mmap_size(64), 67_108_864);
-        // bigger sizes are capped by SQLITE_MAX_MMAP_SIZE, but must still be memory mapped
-        assert!(mmap_size(4096) >= 67_108_864);
+        assert!(
+            mmap_size(4096) >= 67_108_864,
+            "sizes over SQLITE_MAX_MMAP_SIZE are capped but must still be memory mapped"
+        );
     }
 }

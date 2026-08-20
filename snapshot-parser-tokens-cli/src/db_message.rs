@@ -3,7 +3,6 @@ use tokio::sync::oneshot;
 
 pub type OwnedSqlParams = Vec<Box<dyn ToSql + Send + Sync>>;
 
-/// The consumer runs a batch row by row, so a row SQLite rejects only counts itself.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct BatchOutcome {
     pub rows_written: usize,

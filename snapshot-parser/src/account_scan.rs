@@ -12,11 +12,8 @@ use {
     },
 };
 
-// Mirrors the filter of Bank::get_filtered_program_accounts; a rejected account is dropped
-// before its data is ever kept, so a huge owner population never has to fit in memory
 pub type AccountPredicate<'a> = Box<dyn Fn(&Pubkey, &AccountSharedData) -> bool + Send + Sync + 'a>;
 
-// One owner to scan for, plus what to keep of it.
 pub struct OwnerFilter<'a> {
     owner: Pubkey,
     predicate: Option<AccountPredicate<'a>>,
@@ -308,7 +305,6 @@ mod tests {
     #[test]
     fn stale_storage_versions_do_not_leak_into_the_result() {
         let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(1_000_000);
-        // a child bank needs the fork graph that only BankForks installs
         let (parent, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
 
         let wanted_owners = [Pubkey::new_unique(), Pubkey::new_unique()];
@@ -424,7 +420,6 @@ mod tests {
     #[test]
     fn filtered_scan_matches_get_filtered_program_accounts() {
         let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(1_000_000);
-        // a child bank needs the fork graph that only BankForks installs
         let (parent, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
 
         let owner = Pubkey::new_unique();
@@ -441,7 +436,6 @@ mod tests {
         store(&parent, &other_owner, vec![1; 8]);
         persist(&parent);
 
-        // slot 1: newer versions the filter has to be applied to, not the slot-0 ones
         let bank =
             Bank::new_from_parent_with_bank_forks(&bank_forks, parent, Default::default(), 1);
         bank.store_account(&rewritten, &account(&owner, 10, vec![2; 8]));

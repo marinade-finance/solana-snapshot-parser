@@ -20,12 +20,10 @@ use tokio::sync::oneshot;
 pub const TOKEN_ACCOUNT_TABLE: &str = "token_account";
 pub const INSERT_TOKEN_ACCOUNT_QUERY: &str = "INSERT OR REPLACE INTO token_account (pubkey, mint, owner, amount, delegate, state, is_native, delegated_amount, close_authority) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?;";
 
-// spl-token re-exports an older solana-pubkey major, so bridge spl_token::ID via its bytes
 pub fn spl_token_program_id() -> Pubkey {
     Pubkey::from(spl_token::ID.to_bytes())
 }
 
-// An account that fails to unpack is silently skipped, as it was in the bank filter
 pub fn is_token_account_of_mints(mints: &[Pubkey], account: &AccountSharedData) -> bool {
     match account.data().len() {
         spl_token::state::Account::LEN => match spl_token::state::Account::unpack(account.data()) {
@@ -212,7 +210,6 @@ mod tests {
         assert!(!keep(invalid));
     }
 
-    // Rows are buffered, so a table shorter than one batch reaches the DB only on the final flush
     #[tokio::test]
     async fn process_ships_every_account_of_a_run_shorter_than_one_batch() {
         use crate::db_message::BatchOutcome;
@@ -260,7 +257,6 @@ mod tests {
         };
 
         processor.process().await.unwrap();
-        // both senders go with the processor, closing the channel for the collector
         drop(processor);
 
         assert_eq!(collector.await.unwrap(), expected);
