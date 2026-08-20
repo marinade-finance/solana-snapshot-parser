@@ -38,14 +38,14 @@ serde = "1.0.228"
 serde_json = "1.0.149"
 shellexpand = "3.1.2"
 snapshot-parser = { path = "./snapshot-parser" }
-agave-snapshots = "=4.1.0"
-solana-genesis-utils = "=4.1.0"
-solana-ledger = { version = "=4.1.0", features = ["agave-unstable-api"] }
+agave-snapshots = "=4.2.1"
+solana-genesis-utils = "=4.2.1"
+solana-ledger = { version = "=4.2.1", features = ["agave-unstable-api"] }
 solana-loader-v3-interface = { version = "=7.0.0", features = ["serde"] }
 solana-native-token = "=3.0.0"
 solana-program = "=4.0.0"
-solana-runtime = "=4.1.0"
+solana-runtime = "=4.2.1"
 solana-sdk = "=4.0.1"
-solana-accounts-db = "=4.1.0"
-solana-stake-interface = "=3.1.0"
+solana-accounts-db = "=4.2.1"
+solana-stake-interface = { version = "=4.3.0", features = ["serde", "sysvar"] }
 tokio = { version = "1", features = ["full"] }
