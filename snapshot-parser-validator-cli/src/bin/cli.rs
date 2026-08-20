@@ -160,7 +160,7 @@ fn main() -> anyhow::Result<()> {
                         tip_payment_program,
                         require_priority_fee_data,
                     )?;
-                // Jito publishes this collection pretty-printed; parity is checked byte for byte
+                // Jito publishes this collection pretty-printed
                 write_to_json_file(&jito_stake_meta_collection, &output_path)?;
 
                 let program_hash = &jito_stake_meta_collection.jito_program_hash;

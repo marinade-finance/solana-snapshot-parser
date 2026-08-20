@@ -177,7 +177,7 @@ steps:
         exit 1
       fi
       jito_program_hash=$(buildkite-agent meta-data get jito_program_hash)
-      # The stakes ETL looks the object up by this name and silently skips a malformed one
+      # The stakes ETL looks the object up by this name
       if [[ ! "$$jito_program_hash" =~ ^[0-9]{1,10}\.[0-9]{1,10}$$ ]]; then
         echo "Jito program hash '$$jito_program_hash' is not a pair of dot-joined cksum CRC-32 decimals, refusing to name the uploaded stake meta by it!" | buildkite-agent annotate --style error --context "jito-stake-meta"
         exit 1
