@@ -14,14 +14,8 @@ pub struct ScannedAccounts {
     pub stake: Arc<Vec<(Pubkey, AccountSharedData)>>,
 }
 
-// Collects everything the processors need in one pass over the storage files. Walking the
-// accounts index once per owner instead (get_program_accounts) took ~64 minutes of the
-// daily job for these three owners.
-//
-// The predicates are the filters the processors used to pass to
-// get_filtered_program_accounts, moved to where the scan applies them: the SPL-token
-// population is far too large to hold in memory, so the accounts of other mints have to
-// be dropped as they are loaded rather than collected first.
+// The predicates run inside the scan: the SPL-token population is far too large to
+// collect first and filter afterwards
 pub fn scan_required_accounts(
     bank: &Arc<Bank>,
     filters: &Filters,

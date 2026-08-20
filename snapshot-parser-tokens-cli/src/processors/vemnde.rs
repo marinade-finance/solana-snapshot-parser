@@ -35,9 +35,8 @@ pub fn marinade_vsr_program_id() -> anyhow::Result<Pubkey> {
     })
 }
 
-// Selects the VSR accounts the processor stores: a Voter account is recognised by its
-// size alone, exactly as it was when this ran as the filter of
-// get_filtered_program_accounts. Whether it deserialises is decided later, per account.
+// A Voter account is recognised by size alone, as it was in the bank filter; whether it
+// deserialises is decided later, per account
 pub fn is_voter_account(account: &AccountSharedData) -> bool {
     matches!(account.data().len(), VOTER_ACCOUNT_LEN)
 }
@@ -111,8 +110,7 @@ impl ProcessorVeMnde {
                     self.current_ts,
                 ) {
                     Ok(row) => self.db_writer.push(row).await?,
-                    // an account whose voting power does not add up is skipped, as it was
-                    // when the failure came back from the insert
+                    // a voting power that does not add up is skipped, not fatal
                     Err(e) => error!("Error: failed to insert voter account {}: {:?}", pubkey, e),
                 }
             } else {
@@ -120,7 +118,6 @@ impl ProcessorVeMnde {
             }
         }
 
-        // the accounts left in the last partial batch
         self.db_writer.flush().await
     }
 }
@@ -141,7 +138,6 @@ impl ProcessorCallback for ProcessorVeMnde {
     }
 }
 
-/// The parameters of one [`INSERT_VE_MNDE_ACCOUNT_QUERY`] row.
 pub fn vemnde_row(
     pubkey: &Pubkey,
     owner: &Pubkey,
@@ -183,8 +179,6 @@ mod tests {
         })
     }
 
-    // Size is the whole test: a Voter account that does not deserialize is still scanned,
-    // and only warned about later, exactly as before.
     #[test]
     fn voter_accounts_are_recognised_by_size_alone() {
         assert!(is_voter_account(&account_of(VOTER_ACCOUNT_LEN)));

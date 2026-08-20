@@ -9,10 +9,7 @@ use std::str::FromStr;
 
 #[derive(Debug, Deserialize, Serialize)]
 struct FiltersData {
-    /// Deprecated: used to drive a full scan of every account owned by these programs.
-    /// The resulting `account` table has had no readers since solana-snapshot-manager
-    /// cfe06ed (2024-12), so the field is accepted and ignored to stay compatible with
-    /// managers that still emit it.
+    /// Deprecated and ignored; deployed solana-snapshot-managers still emit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     account_owners: Option<String>,
     account_mints: String,
@@ -87,7 +84,6 @@ mod tests {
 
     #[test]
     fn loads_filters_with_account_owners() {
-        // The deployed solana-snapshot-manager still emits account_owners; it must not break us
         let file = TempJson::new(
             "with-owners",
             &format!(
@@ -122,7 +118,6 @@ mod tests {
 
     #[test]
     fn loads_filters_with_empty_account_owners() {
-        // An empty string used to fail pubkey parsing; it is ignored now
         let file = TempJson::new(
             "empty-owners",
             &format!(

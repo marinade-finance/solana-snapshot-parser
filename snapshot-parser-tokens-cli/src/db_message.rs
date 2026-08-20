@@ -1,14 +1,9 @@
 use rusqlite::ToSql;
 use tokio::sync::oneshot;
 
-/// Owned parameters of a single SQL statement, built by [`crate::sql_params`].
 pub type OwnedSqlParams = Vec<Box<dyn ToSql + Send + Sync>>;
 
-/// What one [`DbMessage::Execute`] batch did. The batch removes the channel round-trip
-/// per row, not the per-row execution: the consumer still runs every row on its own, so
-/// a row SQLite rejects only counts itself as failed and its neighbours still land. The
-/// consumer keeps a running total of the failures and refuses to promote the DB if any
-/// row was lost, so the run fails once at the end instead of aborting mid-write.
+/// The consumer runs a batch row by row, so a row SQLite rejects only counts itself.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct BatchOutcome {
     pub rows_written: usize,
@@ -16,7 +11,6 @@ pub struct BatchOutcome {
 }
 
 pub enum DbMessage {
-    /// A batch of rows of one statement, acknowledged once for the whole batch.
     Execute {
         query: String,
         rows: Vec<OwnedSqlParams>,

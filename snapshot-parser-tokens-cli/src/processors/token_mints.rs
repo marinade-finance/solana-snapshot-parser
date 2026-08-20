@@ -74,7 +74,6 @@ impl ProcessorMint {
                 .map_err(|e| anyhow::anyhow!("Failed to unpack mint {}: {:?}", mint_pubkey, e))?;
             self.db_writer.push(mint_row(mint_pubkey, &mint)).await?;
         }
-        // there are only a handful of mints, so this flush ships all of them
         self.db_writer.flush().await
     }
 }
@@ -88,7 +87,6 @@ impl Processor for ProcessorMint {
     }
 }
 
-/// The parameters of one [`INSERT_MINT_QUERY`] row.
 pub fn mint_row(pubkey: &Pubkey, token_mint: &spl_token::state::Mint) -> OwnedSqlParams {
     sql_params![
         pubkey.to_string(),

@@ -6,22 +6,10 @@ use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 
-/// Rows buffered by a producer before one message is handed to the SQLite consumer.
-///
-/// Every row used to be its own channel message with its own oneshot acknowledgement,
-/// which lock-stepped all producers behind the single writer: the round-trip, not the
-/// SQL, dominated the write path (batching measured 2.31x on it). 5000 rows amortise the
-/// round-trip away while keeping the in-flight memory small: a producer never has more
-/// than one batch outstanding, so at most one batch per producer is queued.
+/// Big enough to amortise the channel round-trip that dominated the write path (2.31x),
+/// small enough that the at most one outstanding batch per producer stays cheap.
 pub const DB_BATCH_SIZE: usize = 5000;
 
-/// Accumulates rows of one statement and ships them to the SQLite consumer in batches.
-///
-/// Error semantics match the per-row path this replaces: a row SQLite rejects is logged
-/// and skipped (by the consumer, which executes rows individually), while losing the
-/// channel or the acknowledgement is fatal for the producer - the consumer is gone, so
-/// every later row would be dropped silently. Skipped is not forgiven, only deferred:
-/// the consumer counts the rejects and refuses to promote the DB at finalize.
 pub struct DbWriter {
     db_sender: Sender<DbMessage>,
     query: &'static str,
@@ -54,11 +42,9 @@ impl DbWriter {
         }
     }
 
-    /// Buffers one row, shipping the batch once it is full.
     pub async fn push(&mut self, row: OwnedSqlParams) -> anyhow::Result<()> {
         self.rows.push(row);
-        // the counter follows the row into the buffer, as it did when every row was sent
-        // on its own: it counts rows handed over, not rows SQLite accepted
+        // counts rows handed over, not rows SQLite accepted
         self.progress_counter.inc();
         if self.rows.len() >= self.batch_size {
             self.flush().await?;
@@ -66,8 +52,7 @@ impl DbWriter {
         Ok(())
     }
 
-    /// Ships whatever is buffered, including a partial batch. Must be called once the
-    /// producer is done, otherwise its last rows never reach the DB.
+    /// Must be called once the producer is done; Drop cannot flush.
     pub async fn flush(&mut self) -> anyhow::Result<()> {
         if self.rows.is_empty() {
             return Ok(());
@@ -89,7 +74,6 @@ impl DbWriter {
                     batch_len, self.query
                 )
             })?;
-        // one acknowledgement for the whole batch
         let outcome: BatchOutcome = response_rx.await.with_context(|| {
             format!(
                 "SQLite consumer did not acknowledge {} rows of `{}`",
@@ -98,7 +82,6 @@ impl DbWriter {
         })?;
 
         if outcome.rows_failed > 0 {
-            // the consumer logged each rejected row; this is the per-batch tally
             error!(
                 "SQLite rejected {} of {} rows of `{}`",
                 outcome.rows_failed, batch_len, self.query
@@ -114,8 +97,6 @@ impl DbWriter {
 
 impl Drop for DbWriter {
     fn drop(&mut self) {
-        // dropping cannot flush (that needs to await), so a producer that forgot to flush
-        // would lose its last rows without a trace
         if !self.rows.is_empty() {
             error!(
                 "{} buffered rows of `{}` were dropped unflushed",
@@ -142,8 +123,6 @@ mod tests {
 
     const QUERY: &str = "INSERT INTO t (v) SELECT ?;";
 
-    // Drains the channel like the SQLite consumer does, acknowledging every batch and
-    // recording how many rows each one carried.
     fn spawn_collector(
         mut receiver: mpsc::Receiver<DbMessage>,
         failures_per_batch: usize,
@@ -176,7 +155,6 @@ mod tests {
         for i in 0..5i64 {
             writer.push(sql_params![i]).await.unwrap();
         }
-        // the fifth row is still buffered: only the full batch has been shipped
         assert_eq!(writer.rows.len(), 1);
 
         writer.flush().await.unwrap();
@@ -199,8 +177,6 @@ mod tests {
         }
         writer.flush().await.unwrap();
 
-        // two batches, one acknowledgement each, and neither rejected row stopped the
-        // producer: the run is only failed later, by the consumer's finalize
         drop(writer);
         assert_eq!(collector.await.unwrap(), vec![3, 3]);
         assert_eq!(progress.get(), 6);

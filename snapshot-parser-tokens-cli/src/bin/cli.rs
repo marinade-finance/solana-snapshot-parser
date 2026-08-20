@@ -86,9 +86,7 @@ async fn main() -> anyhow::Result<()> {
         bank.unix_timestamp_from_genesis()
     );
 
-    // One pass over the storage files for every owner the processors need, before any of
-    // them starts: three index walks used to cost ~64 minutes here. Nothing else runs on
-    // the runtime yet, so blocking it with the scan costs no concurrency.
+    // One pass over the storages for every owner; three index walks cost ~64 minutes here
     info!("Scanning accounts from the bank...");
     let scanned_accounts = scan_required_accounts(&bank, &filters)?;
 
@@ -130,7 +128,6 @@ async fn main() -> anyhow::Result<()> {
         .expect("Failed to receive SQLite ready signal");
 
     let token_handle = spawn_processor_task(
-        // each list is moved into its processor, so it is freed as soon as that one is done
         ProcessorToken::new(
             scanned_accounts.token,
             sender.clone(),
@@ -168,9 +165,7 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
-    // A processor that failed wrote only part of its accounts. Fail before the shutdown
-    // below, so the temporary DB is never promoted: a truncated DB the manager ingests is
-    // indistinguishable from a complete one.
+    // Fail before the shutdown below, so a truncated DB is never promoted
     join_processor_tasks([
         token_handle,
         mint_handle,
@@ -185,15 +180,8 @@ async fn main() -> anyhow::Result<()> {
             response: response_tx,
         })
         .await?;
-    // finalize() commits the tail, refuses to promote a DB that lost rows, and otherwise
-    // renames the temporary DB onto the output path. A failure here means there is no
-    // complete DB at that path: it must fail the run rather than exit 0 and let the
-    // manager ingest whatever was already there.
     response_rx.await??;
     drop(sender);
-    // the executor owns its rusqlite Connection and is dropped when start() returns, so
-    // sqlite3_close() has run by the time this handle resolves: nothing is buffered in
-    // the process any more, the committed pages are in the file the rename published.
     db_handle.await??;
     let _ = multi_progress;
 
@@ -202,9 +190,7 @@ async fn main() -> anyhow::Result<()> {
     info!("Finished.");
     log::logger().flush();
 
-    // The DB is written, closed and promoted, so skip the accounts-db teardown of a dying
-    // process: dropping the bank idled ~4 minutes here (manager builds 1196-1198). Only
-    // the success path exits this way; every failure above returns and unwinds normally.
+    // The DB is written, closed and promoted, so skip the accounts-db teardown of a dying process
     std::process::exit(0);
 }
 

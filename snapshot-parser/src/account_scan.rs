@@ -12,13 +12,8 @@ use {
     },
 };
 
-// Decides whether a scanned account is kept. Applied to the freshly loaded account in
-// the liveness-confirm phase, so an owner with a huge population (every SPL-token
-// account, say) is never materialised with its data: rejected accounts are dropped as
-// soon as the predicate says no.
-//
-// Mirrors the filter of Bank::get_filtered_program_accounts, which likewise only ever
-// sees loadable (non-zero-lamport) accounts owned by the program being scanned.
+// Mirrors the filter of Bank::get_filtered_program_accounts; a rejected account is dropped
+// before its data is ever kept, so a huge owner population never has to fit in memory
 pub type AccountPredicate<'a> = Box<dyn Fn(&Pubkey, &AccountSharedData) -> bool + Send + Sync + 'a>;
 
 // One owner to scan for, plus what to keep of it.
@@ -28,7 +23,6 @@ pub struct OwnerFilter<'a> {
 }
 
 impl<'a> OwnerFilter<'a> {
-    // Keep every account owned by `owner`, like Bank::get_program_accounts.
     pub fn all(owner: Pubkey) -> Self {
         Self {
             owner,
@@ -36,8 +30,6 @@ impl<'a> OwnerFilter<'a> {
         }
     }
 
-    // Keep the accounts owned by `owner` that `predicate` accepts, like
-    // Bank::get_filtered_program_accounts.
     pub fn matching(
         owner: Pubkey,
         predicate: impl Fn(&Pubkey, &AccountSharedData) -> bool + Send + Sync + 'a,
@@ -66,8 +58,6 @@ pub fn scan_accounts_by_owner(
     bank: &Arc<Bank>,
     owners: &[Pubkey],
 ) -> anyhow::Result<HashMap<Pubkey, Vec<(Pubkey, AccountSharedData)>>> {
-    // owners used to be collected into a set, so a repeated owner was harmless here;
-    // the filtered scan rejects repeats instead, as two filters for one owner are ambiguous
     let mut seen = HashSet::with_capacity(owners.len());
     let filters: Vec<OwnerFilter> = owners
         .iter()
@@ -77,8 +67,6 @@ pub fn scan_accounts_by_owner(
     scan_accounts_by_owner_filtered(bank, &filters)
 }
 
-// scan_accounts_by_owner with a per-owner predicate deciding what is kept. See
-// AccountPredicate for where the predicate runs and why that matters for memory.
 pub fn scan_accounts_by_owner_filtered(
     bank: &Arc<Bank>,
     filters: &[OwnerFilter<'_>],
@@ -152,7 +140,6 @@ pub fn scan_accounts_by_owner_filtered(
             )?;
             // load() already drops zero-lamport accounts, so only the owner is left to check
             let predicate = wanted.get(account.owner()).copied()?;
-            // a rejected account is dropped here, before anything clones or keeps its data
             predicate
                 .is_none_or(|keep| keep(pubkey, &account))
                 .then_some((*pubkey, account))
@@ -221,7 +208,6 @@ mod tests {
         bank.force_flush_accounts_cache();
     }
 
-    // the scan predicate gets a pubkey the bank filter never sees, so bridge the two
     fn assert_matches_get_filtered_program_accounts(
         bank: &Arc<Bank>,
         owner: &Pubkey,
@@ -432,7 +418,6 @@ mod tests {
             scan_accounts_by_owner_filtered(&bank, &[OwnerFilter::matching(owner, |_, _| false)])
                 .unwrap();
 
-        // the owner is still a key, so a caller taking it out gets an empty list, not a panic
         assert!(scanned[&owner].is_empty());
     }
 
@@ -450,7 +435,6 @@ mod tests {
             pubkey
         };
 
-        // slot 0: a mix of matching, non-matching and wrong-owner accounts
         let rewritten = store(&parent, &owner, vec![1; 8]);
         let drained = store(&parent, &owner, vec![1; 8]);
         store(&parent, &owner, vec![2; 8]);
@@ -460,13 +444,11 @@ mod tests {
         // slot 1: newer versions the filter has to be applied to, not the slot-0 ones
         let bank =
             Bank::new_from_parent_with_bank_forks(&bank_forks, parent, Default::default(), 1);
-        // stops matching, even though the slot-0 version did
         bank.store_account(&rewritten, &account(&owner, 10, vec![2; 8]));
         bank.store_account(&drained, &account(&owner, 0, vec![]));
         store(&bank, &owner, vec![1; 8]);
         persist(&bank);
 
-        // matches some accounts, all of them, and none of them
         assert_matches_get_filtered_program_accounts(&bank, &owner, |account| {
             account.data() == [1; 8]
         });

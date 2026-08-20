@@ -16,8 +16,6 @@ pub struct SQLiteExecutor {
     transaction_batch_counter: u16,
 
     db_execute_counter: Arc<ProgressCounter>,
-    /// Rows SQLite refused over the whole run; [`Self::finalize`] refuses to promote a DB
-    /// that lost any of them.
     rows_rejected: usize,
 
     receiver: Receiver<DbMessage>,
@@ -91,17 +89,7 @@ impl SQLiteExecutor {
         Ok(result)
     }
 
-    /// Execute one batch of rows of the same statement.
-    ///
-    /// Batching is about the channel, not about SQL: the rows are still executed one by
-    /// one, so a row SQLite rejects is logged and skipped exactly as it was when every
-    /// row travelled on its own, and its neighbours in the batch still land. The
-    /// transaction bulk therefore keeps counting rows, not batches.
-    ///
-    /// A rejected row never aborts the run mid-write - the other producers are still
-    /// writing, and killing them here would leave a half-written DB behind. The rejects
-    /// are tallied instead, and [`Self::finalize`] decides once, at the end, whether the
-    /// DB is worth promoting.
+    /// Rows are executed one by one, so a rejected row is only tallied; finalize decides.
     pub async fn execute_rows(&mut self, sql: &str, rows: Vec<OwnedSqlParams>) -> BatchOutcome {
         let mut outcome = BatchOutcome::default();
         for params in rows {
@@ -170,7 +158,6 @@ impl SQLiteExecutor {
                     response,
                 } => {
                     let outcome = self.execute_rows(&query, rows).await;
-                    // one acknowledgement for the whole batch
                     let _ = response.send(outcome);
                 }
                 DbMessage::ExecuteSpecial {
@@ -200,15 +187,8 @@ impl SQLiteExecutor {
             self.commit_db("finalize");
         }
 
-        // A single rejected row fails the run, rather than a share of them: none of the
-        // rows the processors push can be rejected on its own merits any more. Accounts
-        // that do not unpack are filtered out before the push, a voting power that does
-        // not add up is skipped by its processor, every NOT NULL column is filled by
-        // construction, and every statement is an INSERT OR REPLACE, so a repeated pubkey
-        // replaces instead of conflicting. What is left to reject a row is the storage
-        // failing underneath the run - a full disk, an I/O error, corruption - which hits
-        // an arbitrary number of rows and leaves a DB that is silently short. Promoting
-        // that is worse than failing: the manager cannot tell it from a complete one.
+        // A DB that is silently short is indistinguishable from a complete one, so a single
+        // rejected row fails the run
         if self.rows_rejected > 0 {
             anyhow::bail!(
                 "SQLite rejected {} rows during the run, \
@@ -247,15 +227,12 @@ impl SQLiteExecutor {
 
 const BYTES_PER_MIB: u64 = 1024 * 1024;
 
-/// `PRAGMA cache_size` counts pages when positive and *kibibytes* when negative, so a
-/// size in MiB is passed as -(MiB * 1024). Saturating, because the whole workspace is
-/// built with overflow checks on and this comes straight from the command line.
+/// `PRAGMA cache_size` counts pages when positive and kibibytes when negative.
 fn cache_size_pragma(size_mib: i64) -> i64 {
     size_mib.saturating_mul(1024).saturating_neg()
 }
 
-/// `PRAGMA mmap_size` is in *bytes*. This used to pass MiB * 1024 (kibibytes, 1024x too
-/// small) computed in u16, which overflowed for any size of 64 MiB or more.
+/// `PRAGMA mmap_size` is in bytes.
 fn mmap_size_pragma(size_mib: u64) -> i64 {
     i64::try_from(size_mib.saturating_mul(BYTES_PER_MIB)).unwrap_or(i64::MAX)
 }
@@ -273,7 +250,6 @@ mod tests {
     const CREATE_TABLE: &str = "CREATE TABLE t (k TEXT NOT NULL PRIMARY KEY, v INTEGER NOT NULL);";
     const INSERT_ROW: &str = "INSERT OR REPLACE INTO t (k, v) SELECT ?, ?;";
 
-    // A directory of its own per test, removed when the test ends.
     struct TempDir(PathBuf);
 
     impl TempDir {
@@ -313,9 +289,6 @@ mod tests {
         Arc::new(ProgressCounter::new(&MultiProgress::new(), "db_execute"))
     }
 
-    // Runs one executor over the given messages and shuts it down, returning what each
-    // batch reported and what the shutdown (finalize) answered. The executor is dropped
-    // before returning, so its temporary file guard has already had its say.
     async fn run_executor(
         db_path: PathBuf,
         tx_bulk: Option<u16>,
@@ -376,9 +349,6 @@ mod tests {
         rows
     }
 
-    // The row-level tolerance of the per-row channel has to survive batching: the
-    // consumer executes the rows of a batch one by one, so a rejected row takes only
-    // itself down *while the run is going on*. The verdict is passed once, at finalize.
     #[tokio::test]
     async fn a_row_sqlite_rejects_does_not_discard_its_batch() {
         let dir = TempDir::new();
@@ -399,14 +369,10 @@ mod tests {
                 rows_failed: 1
             }]
         );
-        // only the rows that made it into the DB are counted as executed
         assert_eq!(progress.get(), 2);
-        // the neighbours landed, so the run went on - but the DB is short of a row
         finalized.expect_err("a run that lost a row must not be finalized");
     }
 
-    // A DB that is missing rows must not reach the manager: it is indistinguishable from
-    // a complete one, so the run fails and takes its temporary file with it.
     #[tokio::test]
     async fn a_rejected_row_refuses_to_promote_the_db() {
         let dir = TempDir::new();
@@ -436,8 +402,6 @@ mod tests {
         );
     }
 
-    // The other side of the same rule: a run that lost nothing lands on the output path
-    // and leaves no temporary file behind.
     #[tokio::test]
     async fn a_run_without_rejects_promotes_the_db() {
         let dir = TempDir::new();
@@ -457,7 +421,6 @@ mod tests {
         assert!(!dir.temp_db_path().exists());
     }
 
-    // One message in, one acknowledgement out, whatever the batch holds.
     #[tokio::test]
     async fn every_batch_is_acknowledged_exactly_once() {
         let dir = TempDir::new();
@@ -467,7 +430,6 @@ mod tests {
             counter(),
             vec![
                 vec![row("a", Some(1)), row("b", Some(2))],
-                // a partial last batch, as a producer's final flush delivers it
                 vec![row("c", Some(3))],
             ],
         )
@@ -497,8 +459,7 @@ mod tests {
         );
     }
 
-    // The transaction bulk counts rows, so a batch bigger than the bulk is committed in
-    // pieces and nothing is left in an open transaction when the DB is promoted.
+    // The transaction bulk counts rows, so a batch bigger than it is committed in pieces
     #[tokio::test]
     async fn a_batch_bigger_than_the_transaction_bulk_is_written_whole() {
         let dir = TempDir::new();
@@ -520,20 +481,15 @@ mod tests {
         assert_eq!(stored_rows(&dir.db_path()).len(), 5);
     }
 
-    // SQLite wants bytes; the CLI takes MiB. The old code passed KiB computed in u16, so
-    // --sqlite-mmap-size 64 already overflowed and anything smaller was 1024x too small.
     #[test]
     fn mmap_size_is_passed_in_bytes_and_does_not_overflow() {
         assert_eq!(mmap_size_pragma(0), 0);
         assert_eq!(mmap_size_pragma(1), 1024 * 1024);
         assert_eq!(mmap_size_pragma(64), 67_108_864);
         assert_eq!(mmap_size_pragma(4096), 4_294_967_296);
-        // a size that cannot be expressed in bytes is clamped, never wrapped
         assert_eq!(mmap_size_pragma(u64::MAX), i64::MAX);
     }
 
-    // cache_size in MiB is negated kibibytes, which was already right; only the overflow
-    // at the extremes is new.
     #[test]
     fn cache_size_is_passed_as_negative_kibibytes() {
         assert_eq!(cache_size_pragma(0), 0);
@@ -543,8 +499,6 @@ mod tests {
         assert_eq!(cache_size_pragma(i64::MAX), i64::MIN + 1);
     }
 
-    // Both pragmas have to be accepted by SQLite itself, not just computed. 64 MiB is the
-    // smallest size the u16 arithmetic used to overflow on.
     #[test]
     fn sqlite_accepts_the_configured_pragmas() {
         let dir = TempDir::new();

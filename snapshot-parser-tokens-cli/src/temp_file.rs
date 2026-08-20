@@ -10,9 +10,8 @@ impl TempFileGuard {
         Self { path: Some(path) }
     }
 
-    /// Renames the temporary file onto its final name. The guard keeps owning the
-    /// temporary file until the rename actually succeeded, so a failed promotion still
-    /// removes it on drop instead of leaving a partial DB behind.
+    /// The guard keeps owning the temporary file until the rename succeeded, so a failed
+    /// promotion still removes it on drop.
     pub fn promote<P: AsRef<Path>>(&mut self, new_name: P) -> std::io::Result<()> {
         let path = self
             .path
@@ -67,8 +66,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    // Nothing may survive a run that did not promote its DB: the manager cannot tell a
-    // leftover partial file from a finished one.
     #[test]
     fn a_file_that_was_never_promoted_is_removed() {
         let dir = temp_dir();
@@ -81,8 +78,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    // A rename that fails leaves the temporary file owned by the guard, so it is still
-    // cleaned up rather than left next to the output the manager reads.
     #[test]
     fn a_failed_promotion_still_removes_the_temporary_file() {
         let dir = temp_dir();

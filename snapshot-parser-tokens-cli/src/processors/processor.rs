@@ -7,7 +7,6 @@ pub trait Processor {
     fn process(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
-/// A spawned processor, kept together with its name so a failure can say which one it was.
 pub struct ProcessorTask {
     name: &'static str,
     handle: JoinHandle<anyhow::Result<()>>,
@@ -31,11 +30,7 @@ pub async fn spawn_processor_task<P: Processor + Send + 'static>(
     Ok(ProcessorTask::new(P::name(), handle))
 }
 
-/// Waits for every processor and reports the first failure.
-///
-/// Every task is awaited before returning, so no processor is killed mid-write, and a
-/// task that failed or panicked must fail the run: it leaves a truncated DB behind, and
-/// a truncated DB that gets promoted and ingested looks exactly like a successful one.
+/// Every task is awaited before returning, so no processor is killed mid-write.
 pub async fn join_processor_tasks(
     tasks: impl IntoIterator<Item = ProcessorTask>,
 ) -> anyhow::Result<()> {
@@ -89,8 +84,6 @@ mod tests {
         assert_eq!(finished.load(Ordering::Relaxed), 3);
     }
 
-    // A processor that gave up wrote only part of its accounts; the run must not look
-    // like it produced a complete DB.
     #[tokio::test]
     async fn a_failing_processor_fails_the_run() {
         let err = join_processor_tasks([
@@ -126,8 +119,6 @@ mod tests {
         );
     }
 
-    // Returning at the first failure would leave the other processors writing into a DB
-    // that is being finalized, so every task is awaited first.
     #[tokio::test]
     async fn every_task_is_awaited_even_after_a_failure() {
         let finished = Arc::new(AtomicUsize::new(0));

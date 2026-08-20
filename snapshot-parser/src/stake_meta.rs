@@ -52,9 +52,8 @@ pub struct StakeMetaCollection {
     pub stake_metas: Vec<StakeMeta>,
 }
 
-// The stake accounts come from account_scan::scan_accounts_by_owner, which sweeps the
-// storages once for every owner the caller needs. Loading them here instead would mean
-// another full walk of the accounts index, which is what that scan exists to avoid.
+// Accounts come from account_scan::scan_accounts_by_owner; loading them here would cost
+// another full walk of the accounts index
 pub fn generate_stake_meta_collection_for_accounts(
     bank: &Arc<Bank>,
     stake_accounts: &[(Pubkey, AccountSharedData)],

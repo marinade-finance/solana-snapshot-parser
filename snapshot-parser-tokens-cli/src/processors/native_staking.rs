@@ -100,7 +100,6 @@ impl ProcessorNativeStake {
                     .await?;
             }
         }
-        // the accounts left in the last partial batch
         self.db_writer.flush().await
     }
 }
@@ -124,7 +123,6 @@ impl ProcessorCallback for ProcessorNativeStake {
     }
 }
 
-/// The parameters of one [`INSERT_NATIVE_STAKE_ACCOUNT_QUERY`] row.
 pub fn native_stake_row(
     pubkey: &Pubkey,
     authorized_withdrawer: &Pubkey,

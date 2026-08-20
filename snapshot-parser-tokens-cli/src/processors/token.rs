@@ -20,15 +20,12 @@ use tokio::sync::oneshot;
 pub const TOKEN_ACCOUNT_TABLE: &str = "token_account";
 pub const INSERT_TOKEN_ACCOUNT_QUERY: &str = "INSERT OR REPLACE INTO token_account (pubkey, mint, owner, amount, delegate, state, is_native, delegated_amount, close_authority) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?;";
 
-// spl-token re-exports an older solana-pubkey major than the bank API expects,
-// so bridge spl_token::ID through its raw bytes.
+// spl-token re-exports an older solana-pubkey major, so bridge spl_token::ID via its bytes
 pub fn spl_token_program_id() -> Pubkey {
     Pubkey::from(spl_token::ID.to_bytes())
 }
 
-// Selects the token accounts the processor stores: an initialised SPL-token account of
-// one of the wanted mints. An account that fails to unpack is silently skipped, as it
-// was when this ran as the filter of get_filtered_program_accounts.
+// An account that fails to unpack is silently skipped, as it was in the bank filter
 pub fn is_token_account_of_mints(mints: &[Pubkey], account: &AccountSharedData) -> bool {
     match account.data().len() {
         spl_token::state::Account::LEN => match spl_token::state::Account::unpack(account.data()) {
@@ -104,7 +101,6 @@ impl ProcessorToken {
                 .push(token_account_row(pubkey, &token_account))
                 .await?;
         }
-        // the accounts left in the last partial batch
         self.db_writer.flush().await
     }
 }
@@ -125,7 +121,6 @@ impl ProcessorCallback for ProcessorToken {
     }
 }
 
-/// The parameters of one [`INSERT_TOKEN_ACCOUNT_QUERY`] row.
 pub fn token_account_row(
     pubkey: &Pubkey,
     token_account: &spl_token::state::Account,
@@ -203,28 +198,21 @@ mod tests {
         )));
     }
 
-    // These are the accounts the filter used to drop while scanning the whole SPL-token
-    // population: unpack failures are swallowed, not reported.
     #[test]
     fn accounts_that_do_not_unpack_are_dropped_silently() {
         let mints = [Pubkey::new_unique()];
         let keep = |data: Vec<u8>| is_token_account_of_mints(&mints, &account_of(data));
 
-        // an uninitialized account of the right size: unpack answers UninitializedAccount
         assert!(!keep(vec![0u8; spl_token::state::Account::LEN]));
-        // a mint account, and anything else that is not token-account sized
         assert!(!keep(vec![0u8; spl_token::state::Mint::LEN]));
         assert!(!keep(vec![]));
-        // the right size, but the state byte is not a state: unpack answers InvalidAccountData
         let mut invalid =
             token_account_data(&mints[0], spl_token::state::AccountState::Initialized);
         invalid[108] = 9;
         assert!(!keep(invalid));
     }
 
-    // Rows are buffered until a batch is full, so a table smaller than one batch reaches
-    // the DB only through the final flush: dropping that flush would silently lose every
-    // account, and the run would still report success.
+    // Rows are buffered, so a table shorter than one batch reaches the DB only on the final flush
     #[tokio::test]
     async fn process_ships_every_account_of_a_run_shorter_than_one_batch() {
         use crate::db_message::BatchOutcome;
