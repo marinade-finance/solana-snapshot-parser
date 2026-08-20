@@ -31,7 +31,8 @@ struct Args {
     #[arg(long, env)]
     output_stake_meta_collection: String,
 
-    /// Path to write JSON file to for the Jito-format stake metas (e.g., jito-stake-meta.json)
+    /// Base path for the Jito-format stake metas; the Jito program hash goes before the
+    /// extension (e.g., jito-stake-meta.json is written as jito-stake-meta-<hash>.json)
     #[arg(long, env)]
     output_jito_stake_meta: Option<String>,
 
