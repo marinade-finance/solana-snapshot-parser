@@ -61,7 +61,6 @@ struct Args {
 }
 
 impl Args {
-    /// Rejects flag combinations that would silently do nothing at runtime
     fn validate(&self) -> anyhow::Result<()> {
         if self.require_jito_stake_meta && self.output_jito_stake_meta.is_none() {
             anyhow::bail!("--require-jito-stake-meta true needs --output-jito-stake-meta, otherwise the required collection is never produced");
@@ -71,8 +70,7 @@ impl Args {
     }
 }
 
-/// The pipeline names the uploaded collection by this hash, so it must not read 342MB
-/// of JSON to find it
+// A side file so the pipeline can name the upload without reading the collection JSON
 fn program_hash_path(output_jito_stake_meta: &str) -> String {
     format!("{output_jito_stake_meta}.program-hash")
 }
@@ -173,8 +171,6 @@ fn main() -> anyhow::Result<()> {
                 let short_hash = program_hash
                     .get(..PROGRAM_HASH_SHORT_LEN)
                     .ok_or_else(|| anyhow::anyhow!("Malformed Jito program hash {program_hash}"))?;
-                // The upload step names the GCS object by this hash, so it lands next to
-                // the collection instead of being dug out of the JSON
                 write_to_text_file(&format!("{short_hash}\n"), &program_hash_path(&output_path))?;
                 info!(
                     "Jito stake meta collection finished, Jito program hash: {program_hash} (short: {short_hash})."
@@ -204,8 +200,7 @@ fn main() -> anyhow::Result<()> {
         failure = failure.or(Some(outcome));
     }
 
-    // Fatal only where the collection is consumed downstream; elsewhere it stays a
-    // best-effort backup of what Jito publishes itself and must not fail the parsing
+    // A best-effort backup of what Jito publishes itself, unless a cluster's ETL consumes it
     if let Some(handle) = jito_stake_meta_collection_handle {
         let outcome = match handle.join() {
             Ok(Ok(())) => {
@@ -267,7 +262,6 @@ mod tests {
             .expect("testnet Parse step argv must be valid");
 
         assert!(!args.require_priority_fee_data);
-        // Testnet must keep producing the Jito collection best-effort
         assert!(!args.require_jito_stake_meta);
         assert_eq!(
             args.tip_distribution_program,
@@ -301,8 +295,6 @@ mod tests {
         assert!(!args.require_jito_stake_meta);
     }
 
-    // A required collection with nowhere to write it is a configuration mistake that
-    // would otherwise pass the build without ever producing the file the ETL waits for.
     #[test]
     fn require_jito_stake_meta_without_an_output_is_rejected() {
         let args = Args::try_parse_from([
@@ -327,7 +319,6 @@ mod tests {
         );
     }
 
-    // Explicitly not requiring the collection stays valid without an output path
     #[test]
     fn not_requiring_jito_stake_meta_without_an_output_is_allowed() {
         let args = Args::try_parse_from([
@@ -346,7 +337,6 @@ mod tests {
         assert!(!args.require_jito_stake_meta);
     }
 
-    // The pipeline reads this path to name the uploaded GCS object
     #[test]
     fn program_hash_side_file_sits_next_to_the_collection() {
         assert_eq!(
@@ -355,8 +345,7 @@ mod tests {
         );
     }
 
-    // Replays the mainnet Parse step's argv: the Jito collection is mandatory there,
-    // its absence would stall the stakes ETL.
+    // Replays the mainnet Parse step's exact argv
     #[test]
     fn parses_mainnet_parse_step_argv() {
         let args = Args::try_parse_from([

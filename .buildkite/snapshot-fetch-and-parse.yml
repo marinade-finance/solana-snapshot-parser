@@ -150,7 +150,6 @@ steps:
       cp ./stakes.json "$$snapshot_dir/stakes.json"
       if [[ -f ./jito-stake-meta.json && -f ./jito-stake-meta.json.program-hash ]]; then
         cp ./jito-stake-meta.json "$$snapshot_dir/jito-stake-meta.json"
-        # Names the uploaded object, so it travels with the collection
         cp ./jito-stake-meta.json.program-hash "$$snapshot_dir/jito-stake-meta.json.program-hash"
       else
         echo "Jito stake meta collection was not produced! The stakes ETL consumes this file, see the parser output above." | buildkite-agent annotate --style error --context "jito-stake-meta"
@@ -179,8 +178,7 @@ steps:
         exit 1
       fi
       jito_program_hash=$(cat "$$snapshot_dir/jito-stake-meta.json.program-hash")
-      # The stakes ETL looks the object up by this name; a malformed hash would make it
-      # silently fall back to Jito's bucket for every epoch from now on
+      # The stakes ETL looks the object up by this name and silently skips a malformed one
       if [[ ! "$$jito_program_hash" =~ ^[0-9a-f]{16}$$ ]]; then
         echo "Jito program hash '$$jito_program_hash' is not 16 lowercase hex characters, refusing to name the uploaded stake meta by it!" | buildkite-agent annotate --style error --context "jito-stake-meta"
         exit 1

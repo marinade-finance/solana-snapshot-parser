@@ -47,9 +47,7 @@ pub struct JitoStakeMetaCollection {
     pub bank_hash: String,
     pub epoch: Epoch,
     pub slot: u64,
-    // Extra field on top of the format Jito publishes: the sha256 of the deployed Jito
-    // program ELFs this collection replicates. Consumers ignore unknown fields, and
-    // reading a collection produced elsewhere (without the field) must keep working.
+    // Extra field on top of Jito's format; a collection produced by Jito has none
     #[serde(default)]
     pub jito_program_hash: String,
 }
@@ -154,8 +152,6 @@ pub fn generate_jito_stake_meta_collection(
     assert!(bank.is_frozen());
     let epoch = bank.epoch();
 
-    // Fingerprints the programs this collection replicates; a redeploy must be visible
-    // to the consumer, so a program that cannot be hashed fails the whole collection
     let priority_fee_distribution_program: Pubkey =
         JITO_PRIORITY_FEE_DISTRIBUTION_PROGRAM.try_into()?;
     let program_hash = compute_jito_program_hash(
@@ -552,8 +548,6 @@ mod tests {
         assert_eq!(stake_meta["delegations"][0]["lamports_delegated"], 1000);
     }
 
-    // The output stays a superset of what Jito publishes: the extra hash is appended,
-    // and a collection produced without it still reads back.
     #[test]
     fn reads_a_collection_without_the_program_hash() {
         let jito_json = serde_json::json!({

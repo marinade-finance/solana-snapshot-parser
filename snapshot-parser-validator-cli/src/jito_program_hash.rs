@@ -1,3 +1,7 @@
+//! sha256 over the deployed tip-distribution and priority-fee program ELFs, in that
+//! order: programdata bytes after the 45 byte loader metadata, trailing zeros stripped.
+//! The stakes ETL pins this scheme and finds the upload by the first 16 hex chars.
+
 use {
     log::info,
     solana_loader_v3_interface::state::UpgradeableLoaderState,
@@ -10,37 +14,20 @@ use {
     std::sync::Arc,
 };
 
-/// Length of the short hash the pipeline puts into the uploaded GCS object name.
 pub const PROGRAM_HASH_SHORT_LEN: usize = 16;
 
-/// Fingerprint of the on-chain Jito programs the collection was produced against.
-///
-/// The stakes ETL only consumes an uploaded collection whose GCS object name carries
-/// the Jito program hash it was pinned to (`<epoch>/jito-stake-meta-<short>.json`).
-/// When Jito redeploys, the hash changes, the object name changes with it and the ETL
-/// falls back to Jito's own bucket instead of silently reading a file produced by a
-/// parser that no longer replicates the deployed program.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JitoProgramHash {
-    /// sha256 of the concatenated program ELFs, lowercase hex (64 chars)
     pub combined: String,
-    /// per-program sha256 of the ELF, in the order the programs were hashed
     pub per_program: Vec<(Pubkey, String)>,
 }
 
 impl JitoProgramHash {
-    /// The prefix used to name the uploaded object; the full hash stays in the JSON.
     pub fn short(&self) -> &str {
         &self.combined[..PROGRAM_HASH_SHORT_LEN]
     }
 }
 
-/// Hashes the deployed ELF of every given program, in the given order.
-///
-/// The scheme is pinned on the consumer side, so none of it may drift:
-/// the ELF is the programdata account bytes after the metadata header with the
-/// over-allocation zero padding stripped, and the combined hash is the sha256 of
-/// the ELFs concatenated in the order the program ids were passed in.
 pub fn compute_jito_program_hash(
     bank: &Arc<Bank>,
     program_ids: &[Pubkey],
@@ -74,7 +61,6 @@ pub fn compute_jito_program_hash(
     Ok(program_hash)
 }
 
-/// Loads the deployed ELF of an upgradeable program from the bank.
 fn program_elf(bank: &Arc<Bank>, program_id: Pubkey) -> anyhow::Result<Vec<u8>> {
     let program_account = bank.get_account(&program_id).ok_or_else(|| {
         anyhow::anyhow!("Jito program account {program_id} not found in the bank")
@@ -100,7 +86,6 @@ fn program_elf(bank: &Arc<Bank>, program_id: Pubkey) -> anyhow::Result<Vec<u8>> 
     Ok(elf.to_vec())
 }
 
-/// The program account of the upgradeable loader only points at the programdata account.
 fn programdata_address(data: &[u8]) -> anyhow::Result<Pubkey> {
     match bincode::deserialize(data) {
         Ok(UpgradeableLoaderState::Program {
@@ -111,8 +96,7 @@ fn programdata_address(data: &[u8]) -> anyhow::Result<Pubkey> {
     }
 }
 
-/// The ELF follows the programdata metadata header; the account is over-allocated so
-/// that a bigger upgrade fits, and that spare room is zero padding, not program bytes.
+// The account is over-allocated so a bigger upgrade fits; the spare room is zero padding
 fn elf_from_programdata(data: &[u8]) -> anyhow::Result<&[u8]> {
     match bincode::deserialize(data) {
         Ok(UpgradeableLoaderState::ProgramData { .. }) => {}
@@ -151,7 +135,6 @@ fn to_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    // Zero padding of the over-allocated account, big enough to prove it is stripped
     const PADDING: usize = 128;
 
     fn programdata_account(elf: &[u8]) -> Vec<u8> {
@@ -172,7 +155,6 @@ mod tests {
 
     #[test]
     fn programdata_metadata_header_is_45_bytes() {
-        // The consumer side is pinned to this offset; a change of it is a format change
         assert_eq!(UpgradeableLoaderState::size_of_programdata_metadata(), 45);
     }
 
@@ -184,8 +166,6 @@ mod tests {
         assert_eq!(elf_from_programdata(&account).unwrap(), elf.as_slice());
     }
 
-    // Pins the exact arithmetic the stakes ETL depends on: the digests below are the
-    // sha256 of the synthetic ELF payloads, and the combined one of their concatenation.
     #[test]
     fn hashes_the_sliced_elf_bytes() {
         let tip_elf = bytes_1_to_32();
@@ -208,7 +188,6 @@ mod tests {
         );
     }
 
-    // The order of the programs is part of the scheme, the combined hash must not commute
     #[test]
     fn combined_hash_depends_on_the_program_order() {
         let tip_elf = bytes_1_to_32();
