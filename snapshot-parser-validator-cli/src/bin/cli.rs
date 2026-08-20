@@ -1,7 +1,7 @@
 use env_logger::{Builder, Env};
 use log::LevelFilter;
 use snapshot_parser::stake_meta;
-use snapshot_parser::utils::{write_to_json_file, write_to_text_file};
+use snapshot_parser::utils::write_to_json_file;
 use snapshot_parser_validator_cli::jito_mev::JITO_PROGRAM;
 use snapshot_parser_validator_cli::jito_stake_meta::JITO_TIP_PAYMENT_PROGRAM;
 use snapshot_parser_validator_cli::scanned_accounts::scan_required_accounts;
@@ -13,7 +13,7 @@ use {
     log::{error, info},
     snapshot_parser::bank_loader::create_bank_from_ledger,
     snapshot_parser::cli::path_parser,
-    std::path::PathBuf,
+    std::path::{Path, PathBuf},
 };
 
 #[derive(Parser, Debug)]
@@ -67,8 +67,17 @@ impl Args {
     }
 }
 
-fn program_hash_path(output_jito_stake_meta: &str) -> String {
-    format!("{output_jito_stake_meta}.program-hash")
+fn hash_named_path(output_jito_stake_meta: &str, jito_program_hash: &str) -> String {
+    let path = Path::new(output_jito_stake_meta);
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let file_name = match path.extension() {
+        Some(extension) => format!("{stem}-{jito_program_hash}.{}", extension.to_string_lossy()),
+        None => format!("{stem}-{jito_program_hash}"),
+    };
+
+    path.with_file_name(file_name)
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn main() -> anyhow::Result<()> {
@@ -160,15 +169,11 @@ fn main() -> anyhow::Result<()> {
                         tip_payment_program,
                         require_priority_fee_data,
                     )?;
+                let hash_named_output =
+                    hash_named_path(&output_path, &jito_stake_meta_collection.jito_program_hash);
                 // Jito publishes this collection pretty-printed
-                write_to_json_file(&jito_stake_meta_collection, &output_path)?;
-
-                let program_hash = &jito_stake_meta_collection.jito_program_hash;
-                write_to_text_file(
-                    &format!("{program_hash}\n"),
-                    &program_hash_path(&output_path),
-                )?;
-                info!("Jito stake meta collection finished, Jito program hash: {program_hash}.");
+                write_to_json_file(&jito_stake_meta_collection, &hash_named_output)?;
+                info!("Jito stake meta collection finished, written to {hash_named_output}.");
                 Ok(())
             };
 
@@ -225,6 +230,9 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use snapshot_parser::utils::read_from_json_file;
+    use snapshot_parser_validator_cli::jito_stake_meta::JitoStakeMetaCollection;
+    use std::fs;
 
     // Replays the testnet Parse step's exact argv so the CLI contract is checked
     // without a snapshot download; would have caught --require-priority-fee-data
@@ -267,6 +275,11 @@ mod tests {
             "GJHtFqM9agxPmkeKjHny6qiRKrXZALvvFGiKf11QE7hy"
                 .parse::<Pubkey>()
                 .unwrap()
+        );
+        assert_eq!(
+            hash_named_path(&args.output_jito_stake_meta.unwrap(), HASH),
+            "./jito-stake-meta-2426260379.1775319386.json",
+            "the Parse step globs ./jito-stake-meta-*.json for exactly this name"
         );
     }
 
@@ -330,12 +343,76 @@ mod tests {
         assert!(!args.require_jito_stake_meta);
     }
 
+    const HASH: &str = "2426260379.1775319386";
+
     #[test]
-    fn program_hash_side_file_sits_next_to_the_collection() {
+    fn the_hash_goes_before_the_extension() {
         assert_eq!(
-            program_hash_path("./jito-stake-meta.json"),
-            "./jito-stake-meta.json.program-hash"
+            hash_named_path("./jito-stake-meta.json", HASH),
+            "./jito-stake-meta-2426260379.1775319386.json"
         );
+        assert_eq!(
+            hash_named_path("jito-stake-meta.json", HASH),
+            "jito-stake-meta-2426260379.1775319386.json"
+        );
+        assert_eq!(
+            hash_named_path("/mnt/out/jito-stake-meta.json", HASH),
+            "/mnt/out/jito-stake-meta-2426260379.1775319386.json"
+        );
+    }
+
+    #[test]
+    fn a_dotted_name_splits_at_the_last_extension() {
+        assert_eq!(
+            hash_named_path("./jito.stake.meta.json", HASH),
+            "./jito.stake.meta-2426260379.1775319386.json"
+        );
+    }
+
+    #[test]
+    fn a_path_without_an_extension_gets_the_hash_appended() {
+        assert_eq!(
+            hash_named_path("./jito-stake-meta", HASH),
+            "./jito-stake-meta-2426260379.1775319386"
+        );
+        assert_eq!(
+            hash_named_path("/mnt/out/jito-stake-meta", HASH),
+            "/mnt/out/jito-stake-meta-2426260379.1775319386"
+        );
+    }
+
+    #[test]
+    fn the_written_file_is_named_by_the_hash_it_carries() {
+        let dir = std::env::temp_dir().join(format!(
+            "jito-stake-meta-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let collection = JitoStakeMetaCollection {
+            stake_metas: vec![],
+            tip_distribution_program_id: Pubkey::new_unique(),
+            priority_fee_distribution_program_id: Pubkey::new_unique(),
+            bank_hash: "hash".to_string(),
+            epoch: 1002,
+            slot: 433295999,
+            jito_program_hash: HASH.to_string(),
+        };
+
+        let out = hash_named_path(
+            &dir.join("jito-stake-meta.json").to_string_lossy(),
+            &collection.jito_program_hash,
+        );
+        write_to_json_file(&collection, &out).unwrap();
+
+        let written: JitoStakeMetaCollection = read_from_json_file(&out).unwrap();
+        assert_eq!(
+            Path::new(&out).file_name().unwrap().to_string_lossy(),
+            format!("jito-stake-meta-{}.json", written.jito_program_hash),
+            "the GCS object name the stakes ETL derives from the hash must be the written file"
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -359,5 +436,10 @@ mod tests {
 
         assert!(args.require_jito_stake_meta);
         assert!(args.require_priority_fee_data);
+        assert_eq!(
+            hash_named_path(&args.output_jito_stake_meta.unwrap(), HASH),
+            "./jito-stake-meta-2426260379.1775319386.json",
+            "the Parse step globs ./jito-stake-meta-*.json for exactly this name"
+        );
     }
 }
