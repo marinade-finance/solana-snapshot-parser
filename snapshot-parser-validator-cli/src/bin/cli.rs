@@ -13,7 +13,7 @@ use {
     log::{error, info},
     snapshot_parser::bank_loader::create_bank_from_ledger,
     snapshot_parser::cli::path_parser,
-    std::path::{Path, PathBuf},
+    std::path::PathBuf,
 };
 
 #[derive(Parser, Debug)]
@@ -31,8 +31,7 @@ struct Args {
     #[arg(long, env)]
     output_stake_meta_collection: String,
 
-    /// Base path for the Jito-format stake metas; the Jito program hash goes before the
-    /// extension (e.g., jito-stake-meta.json is written as jito-stake-meta-<hash>.json)
+    /// Path to write JSON file to for the Jito-format stake metas; a literal {hash} in it is replaced by the Jito program hash (e.g., jito-stake-meta-{hash}.json)
     #[arg(long, env)]
     output_jito_stake_meta: Option<String>,
 
@@ -68,17 +67,10 @@ impl Args {
     }
 }
 
-fn hash_named_path(output_jito_stake_meta: &str, jito_program_hash: &str) -> String {
-    let path = Path::new(output_jito_stake_meta);
-    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-    let file_name = match path.extension() {
-        Some(extension) => format!("{stem}-{jito_program_hash}.{}", extension.to_string_lossy()),
-        None => format!("{stem}-{jito_program_hash}"),
-    };
+const JITO_PROGRAM_HASH_PLACEHOLDER: &str = "{hash}";
 
-    path.with_file_name(file_name)
-        .to_string_lossy()
-        .into_owned()
+fn resolve_output_path(output_jito_stake_meta: &str, jito_program_hash: &str) -> String {
+    output_jito_stake_meta.replace(JITO_PROGRAM_HASH_PLACEHOLDER, jito_program_hash)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -170,11 +162,13 @@ fn main() -> anyhow::Result<()> {
                         tip_payment_program,
                         require_priority_fee_data,
                     )?;
-                let hash_named_output =
-                    hash_named_path(&output_path, &jito_stake_meta_collection.jito_program_hash);
+                let resolved_output = resolve_output_path(
+                    &output_path,
+                    &jito_stake_meta_collection.jito_program_hash,
+                );
                 // Jito publishes this collection pretty-printed
-                write_to_json_file(&jito_stake_meta_collection, &hash_named_output)?;
-                info!("Jito stake meta collection finished, written to {hash_named_output}.");
+                write_to_json_file(&jito_stake_meta_collection, &resolved_output)?;
+                info!("Jito stake meta collection finished, written to {resolved_output}.");
                 Ok(())
             };
 
@@ -234,6 +228,24 @@ mod tests {
     use snapshot_parser::utils::read_from_json_file;
     use snapshot_parser_validator_cli::jito_stake_meta::JitoStakeMetaCollection;
     use std::fs;
+    use std::path::Path;
+
+    const HASH: &str = "2426260379.1775319386";
+
+    fn matches_pipeline_glob_and_guard(path: &str) -> bool {
+        let Some(hash) = path
+            .strip_prefix("./jito-stake-meta-")
+            .and_then(|name| name.strip_suffix(".json"))
+        else {
+            return false;
+        };
+        let Some((left, right)) = hash.split_once('.') else {
+            return false;
+        };
+        [left, right].iter().all(|part| {
+            (1..=10).contains(&part.len()) && part.bytes().all(|byte| byte.is_ascii_digit())
+        })
+    }
 
     // Replays the testnet Parse step's exact argv so the CLI contract is checked
     // without a snapshot download; would have caught --require-priority-fee-data
@@ -278,9 +290,9 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(
-            hash_named_path(&args.output_jito_stake_meta.unwrap(), HASH),
-            "./jito-stake-meta-2426260379.1775319386.json",
-            "the Parse step globs ./jito-stake-meta-*.json for exactly this name"
+            resolve_output_path(&args.output_jito_stake_meta.unwrap(), HASH),
+            "./jito-stake-meta.json",
+            "the testnet Parse step copies and uploads exactly this name"
         );
     }
 
@@ -344,41 +356,28 @@ mod tests {
         assert!(!args.require_jito_stake_meta);
     }
 
-    const HASH: &str = "2426260379.1775319386";
-
     #[test]
-    fn the_hash_goes_before_the_extension() {
+    fn the_placeholder_is_substituted_wherever_it_stands() {
         assert_eq!(
-            hash_named_path("./jito-stake-meta.json", HASH),
+            resolve_output_path("./jito-stake-meta-{hash}.json", HASH),
             "./jito-stake-meta-2426260379.1775319386.json"
         );
         assert_eq!(
-            hash_named_path("jito-stake-meta.json", HASH),
-            "jito-stake-meta-2426260379.1775319386.json"
+            resolve_output_path("/mnt/out/{hash}/jito-stake-meta.json", HASH),
+            "/mnt/out/2426260379.1775319386/jito-stake-meta.json"
         );
-        assert_eq!(
-            hash_named_path("/mnt/out/jito-stake-meta.json", HASH),
-            "/mnt/out/jito-stake-meta-2426260379.1775319386.json"
-        );
+        assert_eq!(resolve_output_path("{hash}", HASH), "2426260379.1775319386");
     }
 
     #[test]
-    fn a_dotted_name_splits_at_the_last_extension() {
+    fn a_value_without_the_placeholder_is_the_path_written() {
         assert_eq!(
-            hash_named_path("./jito.stake.meta.json", HASH),
-            "./jito.stake.meta-2426260379.1775319386.json"
-        );
-    }
-
-    #[test]
-    fn a_path_without_an_extension_gets_the_hash_appended() {
-        assert_eq!(
-            hash_named_path("./jito-stake-meta", HASH),
-            "./jito-stake-meta-2426260379.1775319386"
+            resolve_output_path("./jito-stake-meta.json", HASH),
+            "./jito-stake-meta.json"
         );
         assert_eq!(
-            hash_named_path("/mnt/out/jito-stake-meta", HASH),
-            "/mnt/out/jito-stake-meta-2426260379.1775319386"
+            resolve_output_path("/mnt/out/jito-stake-meta", HASH),
+            "/mnt/out/jito-stake-meta"
         );
     }
 
@@ -400,8 +399,8 @@ mod tests {
             jito_program_hash: HASH.to_string(),
         };
 
-        let out = hash_named_path(
-            &dir.join("jito-stake-meta.json").to_string_lossy(),
+        let out = resolve_output_path(
+            &dir.join("jito-stake-meta-{hash}.json").to_string_lossy(),
             &collection.jito_program_hash,
         );
         write_to_json_file(&collection, &out).unwrap();
@@ -427,7 +426,7 @@ mod tests {
             "--output-stake-meta-collection",
             "./stakes.json",
             "--output-jito-stake-meta",
-            "./jito-stake-meta.json",
+            "./jito-stake-meta-{hash}.json",
             "--require-jito-stake-meta",
             "true",
         ])
@@ -437,10 +436,11 @@ mod tests {
 
         assert!(args.require_jito_stake_meta);
         assert!(args.require_priority_fee_data);
-        assert_eq!(
-            hash_named_path(&args.output_jito_stake_meta.unwrap(), HASH),
-            "./jito-stake-meta-2426260379.1775319386.json",
-            "the Parse step globs ./jito-stake-meta-*.json for exactly this name"
+        let out = resolve_output_path(&args.output_jito_stake_meta.unwrap(), HASH);
+        assert_eq!(out, "./jito-stake-meta-2426260379.1775319386.json");
+        assert!(
+            matches_pipeline_glob_and_guard(&out),
+            "the Parse step globs ./jito-stake-meta-*.json and guards the name: {out}"
         );
     }
 }

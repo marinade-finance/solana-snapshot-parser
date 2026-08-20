@@ -142,7 +142,7 @@ steps:
         --ledger-path "$$snapshot_dir" \
         --output-validator-meta-collection "./validators.json" \
         --output-stake-meta-collection "./stakes.json" \
-        --output-jito-stake-meta "./jito-stake-meta.json" \
+        --output-jito-stake-meta "./jito-stake-meta-{hash}.json" \
         --require-jito-stake-meta true
     - |
       cp ./validators.json "$$snapshot_dir/validators.json"

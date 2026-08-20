@@ -133,7 +133,7 @@ steps:
     artifact_paths:
         - ./validators.json
         - ./stakes.json
-        - ./jito-stake-meta-*.json
+        - ./jito-stake-meta.json
     commands:
     - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
     - buildkite-agent artifact download --include-retried-jobs target/release/snapshot-parser-validator-cli .
@@ -151,13 +151,10 @@ steps:
     - |
       cp ./validators.json "$$snapshot_dir/validators.json"
       cp ./stakes.json "$$snapshot_dir/stakes.json"
-      shopt -s nullglob
-      jito_stake_meta=(./jito-stake-meta-*.json)
-      shopt -u nullglob
-      if [[ $${#jito_stake_meta[@]} -eq 1 ]]; then
-        cp "$${jito_stake_meta[0]}" "$$snapshot_dir/"
+      if [[ -f ./jito-stake-meta.json ]]; then
+        cp ./jito-stake-meta.json "$$snapshot_dir/jito-stake-meta.json"
       else
-        echo "Expected one ./jito-stake-meta-<hash>.json, found $${#jito_stake_meta[@]}!" | buildkite-agent annotate --style warning --context "jito-stake-meta"
+        echo "Jito stake meta collection was not produced!" | buildkite-agent annotate --style warning --context "jito-stake-meta"
       fi
 
   - wait: ~
@@ -178,13 +175,10 @@ steps:
     - gcloud storage cp "$$snapshot_dir/validators.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
     - gcloud storage cp "$$snapshot_dir/stakes.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
     - |
-      shopt -s nullglob
-      jito_stake_meta=("$$snapshot_dir"/jito-stake-meta-*.json)
-      shopt -u nullglob
-      if [[ $${#jito_stake_meta[@]} -eq 1 ]]; then
-        gcloud storage cp "$${jito_stake_meta[0]}" "$GCLOUD_SNAPSHOTS/$$epoch/"
+      if [[ -f "$$snapshot_dir/jito-stake-meta.json" ]]; then
+        gcloud storage cp "$$snapshot_dir/jito-stake-meta.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
       else
-        echo "Expected one $$snapshot_dir/jito-stake-meta-<hash>.json, found $${#jito_stake_meta[@]}!"
+        echo "Jito stake meta collection was not produced!"
       fi
 
   - wait: ~
