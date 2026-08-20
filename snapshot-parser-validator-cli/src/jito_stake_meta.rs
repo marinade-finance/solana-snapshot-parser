@@ -517,17 +517,13 @@ mod tests {
             bank_hash: "hash".to_string(),
             epoch: 1002,
             slot: 433295999,
-            jito_program_hash: "5dcd612ee1fd3aa36f2d67039a1e64093e2687f7331494fc8bcaed8070b28056"
-                .to_string(),
+            jito_program_hash: "2426260379.1775319386".to_string(),
         };
 
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&collection).unwrap()).unwrap();
         assert_eq!(json["epoch"], 1002);
-        assert_eq!(
-            json["jito_program_hash"],
-            "5dcd612ee1fd3aa36f2d67039a1e64093e2687f7331494fc8bcaed8070b28056"
-        );
+        assert_eq!(json["jito_program_hash"], "2426260379.1775319386");
         assert_eq!(
             json["tip_distribution_program_id"],
             JITO_PROGRAM.to_string()

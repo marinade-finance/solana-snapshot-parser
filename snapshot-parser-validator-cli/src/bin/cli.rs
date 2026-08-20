@@ -3,7 +3,6 @@ use log::LevelFilter;
 use snapshot_parser::stake_meta;
 use snapshot_parser::utils::{write_to_json_file, write_to_text_file};
 use snapshot_parser_validator_cli::jito_mev::JITO_PROGRAM;
-use snapshot_parser_validator_cli::jito_program_hash::PROGRAM_HASH_SHORT_LEN;
 use snapshot_parser_validator_cli::jito_stake_meta::JITO_TIP_PAYMENT_PROGRAM;
 use snapshot_parser_validator_cli::scanned_accounts::scan_required_accounts;
 use snapshot_parser_validator_cli::{jito_stake_meta, validator_meta};
@@ -168,13 +167,11 @@ fn main() -> anyhow::Result<()> {
                 write_to_json_file(&jito_stake_meta_collection, &output_path)?;
 
                 let program_hash = &jito_stake_meta_collection.jito_program_hash;
-                let short_hash = program_hash
-                    .get(..PROGRAM_HASH_SHORT_LEN)
-                    .ok_or_else(|| anyhow::anyhow!("Malformed Jito program hash {program_hash}"))?;
-                write_to_text_file(&format!("{short_hash}\n"), &program_hash_path(&output_path))?;
-                info!(
-                    "Jito stake meta collection finished, Jito program hash: {program_hash} (short: {short_hash})."
-                );
+                write_to_text_file(
+                    &format!("{program_hash}\n"),
+                    &program_hash_path(&output_path),
+                )?;
+                info!("Jito stake meta collection finished, Jito program hash: {program_hash}.");
                 Ok(())
             };
 
