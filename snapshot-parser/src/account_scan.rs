@@ -12,6 +12,36 @@ use {
     },
 };
 
+pub type AccountPredicate<'a> = Box<dyn Fn(&Pubkey, &AccountSharedData) -> bool + Send + Sync + 'a>;
+
+pub struct OwnerFilter<'a> {
+    owner: Pubkey,
+    predicate: Option<AccountPredicate<'a>>,
+}
+
+impl<'a> OwnerFilter<'a> {
+    pub fn all(owner: Pubkey) -> Self {
+        Self {
+            owner,
+            predicate: None,
+        }
+    }
+
+    pub fn matching(
+        owner: Pubkey,
+        predicate: impl Fn(&Pubkey, &AccountSharedData) -> bool + Send + Sync + 'a,
+    ) -> Self {
+        Self {
+            owner,
+            predicate: Some(Box::new(predicate)),
+        }
+    }
+
+    pub fn owner(&self) -> &Pubkey {
+        &self.owner
+    }
+}
+
 // Finds all accounts owned by the given programs in one pass over the storage files.
 // Doing this with get_program_accounts instead would rescan the whole accounts index
 // once per owner.
@@ -25,7 +55,28 @@ pub fn scan_accounts_by_owner(
     bank: &Arc<Bank>,
     owners: &[Pubkey],
 ) -> anyhow::Result<HashMap<Pubkey, Vec<(Pubkey, AccountSharedData)>>> {
-    let wanted: HashSet<Pubkey> = owners.iter().copied().collect();
+    let mut seen = HashSet::with_capacity(owners.len());
+    let filters: Vec<OwnerFilter> = owners
+        .iter()
+        .filter(|owner| seen.insert(**owner))
+        .map(|owner| OwnerFilter::all(*owner))
+        .collect();
+    scan_accounts_by_owner_filtered(bank, &filters)
+}
+
+pub fn scan_accounts_by_owner_filtered(
+    bank: &Arc<Bank>,
+    filters: &[OwnerFilter<'_>],
+) -> anyhow::Result<HashMap<Pubkey, Vec<(Pubkey, AccountSharedData)>>> {
+    let wanted: HashMap<Pubkey, Option<&AccountPredicate<'_>>> = filters
+        .iter()
+        .map(|filter| (filter.owner, filter.predicate.as_ref()))
+        .collect();
+    anyhow::ensure!(
+        wanted.len() == filters.len(),
+        "account scan got more than one filter for the same owner; which one applies would be \
+         arbitrary, so pass exactly one filter per owner"
+    );
 
     // accounts still in the write cache have no storage for the sweep to find
     bank.force_flush_accounts_cache();
@@ -48,7 +99,7 @@ pub fn scan_accounts_by_owner(
                 .accounts
                 .scan_accounts_without_data(|_offset, account| {
                     // a live account is loadable, so a zero-lamport version is never the one kept
-                    if account.lamports != 0 && wanted.contains(account.owner) {
+                    if account.lamports != 0 && wanted.contains_key(account.owner) {
                         candidates.insert(*account.pubkey);
                     }
                 })?;
@@ -85,20 +136,21 @@ pub fn scan_accounts_by_owner(
                 PopulateReadCache::False,
             )?;
             // load() already drops zero-lamport accounts, so only the owner is left to check
-            wanted
-                .contains(account.owner())
+            let predicate = wanted.get(account.owner()).copied()?;
+            predicate
+                .is_none_or(|keep| keep(pubkey, &account))
                 .then_some((*pubkey, account))
         })
         .collect();
     info!(
-        "Liveness confirm: {} of {} candidates live in {:?}",
+        "Liveness confirm: {} of {} candidates kept in {:?}",
         confirmed.len(),
         candidates.len(),
         confirm_started.elapsed()
     );
 
     let mut collected: HashMap<Pubkey, Vec<(Pubkey, AccountSharedData)>> =
-        wanted.iter().map(|owner| (*owner, Vec::new())).collect();
+        wanted.keys().map(|owner| (*owner, Vec::new())).collect();
     for (pubkey, account) in confirmed {
         collected
             .entry(*account.owner())
@@ -151,6 +203,29 @@ mod tests {
         bank.freeze();
         bank.squash();
         bank.force_flush_accounts_cache();
+    }
+
+    fn assert_matches_get_filtered_program_accounts(
+        bank: &Arc<Bank>,
+        owner: &Pubkey,
+        keep: impl Fn(&AccountSharedData) -> bool + Send + Sync + Copy,
+    ) {
+        let scanned = scan_accounts_by_owner_filtered(
+            bank,
+            &[OwnerFilter::matching(*owner, move |_pubkey, account| {
+                keep(account)
+            })],
+        )
+        .unwrap();
+        assert_eq!(
+            pubkeys(&scanned[owner]),
+            pubkeys(&bank.get_filtered_program_accounts(owner, keep).unwrap()),
+            "filtered scan diverged from get_filtered_program_accounts for owner {owner}"
+        );
+        assert!(
+            scanned[owner].is_sorted_by_key(|(pubkey, _)| *pubkey),
+            "filtered scan result for owner {owner} is not in a reproducible order"
+        );
     }
 
     fn assert_matches_get_program_accounts(bank: &Arc<Bank>, owners: &[Pubkey]) {
@@ -230,7 +305,6 @@ mod tests {
     #[test]
     fn stale_storage_versions_do_not_leak_into_the_result() {
         let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(1_000_000);
-        // a child bank needs the fork graph that only BankForks installs
         let (parent, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
 
         let wanted_owners = [Pubkey::new_unique(), Pubkey::new_unique()];
@@ -264,6 +338,12 @@ mod tests {
         let scanned = scan_accounts_by_owner(&bank, &wanted_owners).unwrap();
 
         assert_eq!(
+            scanned.keys().copied().collect::<BTreeSet<Pubkey>>(),
+            pubkeys_of(&wanted_owners),
+            "the result must hold an entry per wanted owner and nothing else, so an account \
+             that moved to another owner cannot come back under a key of its own"
+        );
+        assert_eq!(
             pubkeys(&scanned[&wanted_owners[0]]),
             pubkeys_of(&[rewritten]),
             "an account whose owner moved out of the wanted set must be dropped"
@@ -282,5 +362,127 @@ mod tests {
         assert_eq!(account.data(), &[9; 4]);
 
         assert_matches_get_program_accounts(&bank, &wanted_owners);
+    }
+
+    #[test]
+    fn a_predicate_keeps_only_what_it_accepts_and_leaves_other_owners_whole() {
+        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(1_000_000);
+        let bank = Arc::new(Bank::new_for_tests(&genesis_config));
+
+        let filtered_owner = Pubkey::new_unique();
+        let unfiltered_owner = Pubkey::new_unique();
+        let store = |owner: &Pubkey, data: Vec<u8>| {
+            let pubkey = Pubkey::new_unique();
+            bank.store_account(&pubkey, &account(owner, 10, data));
+            pubkey
+        };
+
+        let kept = [
+            store(&filtered_owner, vec![7; 4]),
+            store(&filtered_owner, vec![7; 4]),
+        ];
+        let dropped = store(&filtered_owner, vec![0; 4]);
+        let untouched = [store(&unfiltered_owner, vec![0; 4])];
+        persist(&bank);
+
+        let scanned = scan_accounts_by_owner_filtered(
+            &bank,
+            &[
+                OwnerFilter::matching(filtered_owner, |_pubkey, account| account.data() == [7; 4]),
+                OwnerFilter::all(unfiltered_owner),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(pubkeys(&scanned[&filtered_owner]), pubkeys_of(&kept));
+        assert!(!scanned[&filtered_owner]
+            .iter()
+            .any(|(pubkey, _)| *pubkey == dropped));
+        assert_eq!(pubkeys(&scanned[&unfiltered_owner]), pubkeys_of(&untouched));
+    }
+
+    #[test]
+    fn a_predicate_that_accepts_nothing_leaves_an_empty_entry_behind() {
+        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(1_000_000);
+        let bank = Arc::new(Bank::new_for_tests(&genesis_config));
+
+        let owner = Pubkey::new_unique();
+        bank.store_account(&Pubkey::new_unique(), &account(&owner, 10, vec![1, 2, 3]));
+        persist(&bank);
+
+        let scanned =
+            scan_accounts_by_owner_filtered(&bank, &[OwnerFilter::matching(owner, |_, _| false)])
+                .unwrap();
+
+        assert!(scanned[&owner].is_empty());
+    }
+
+    #[test]
+    fn filtered_scan_matches_get_filtered_program_accounts() {
+        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(1_000_000);
+        let (parent, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+
+        let owner = Pubkey::new_unique();
+        let other_owner = Pubkey::new_unique();
+        let store = |bank: &Arc<Bank>, owner: &Pubkey, data: Vec<u8>| {
+            let pubkey = Pubkey::new_unique();
+            bank.store_account(&pubkey, &account(owner, 10, data));
+            pubkey
+        };
+
+        let rewritten = store(&parent, &owner, vec![1; 8]);
+        let drained = store(&parent, &owner, vec![1; 8]);
+        store(&parent, &owner, vec![2; 8]);
+        store(&parent, &other_owner, vec![1; 8]);
+        persist(&parent);
+
+        let bank =
+            Bank::new_from_parent_with_bank_forks(&bank_forks, parent, Default::default(), 1);
+        bank.store_account(&rewritten, &account(&owner, 10, vec![2; 8]));
+        bank.store_account(&drained, &account(&owner, 0, vec![]));
+        store(&bank, &owner, vec![1; 8]);
+        persist(&bank);
+
+        assert_matches_get_filtered_program_accounts(&bank, &owner, |account| {
+            account.data() == [1; 8]
+        });
+        assert_matches_get_filtered_program_accounts(&bank, &owner, |_| true);
+        assert_matches_get_filtered_program_accounts(&bank, &owner, |_| false);
+    }
+
+    #[test]
+    fn two_filters_for_one_owner_are_rejected() {
+        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(1_000_000);
+        let bank = Arc::new(Bank::new_for_tests(&genesis_config));
+        persist(&bank);
+
+        let owner = Pubkey::new_unique();
+        let err = scan_accounts_by_owner_filtered(
+            &bank,
+            &[
+                OwnerFilter::matching(owner, |_, _| true),
+                OwnerFilter::matching(owner, |_, _| false),
+            ],
+        )
+        .expect_err("an ambiguous filter set must not be answered");
+        assert!(
+            err.to_string().contains("same owner"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn a_repeated_owner_is_still_harmless_for_the_unfiltered_scan() {
+        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(1_000_000);
+        let bank = Arc::new(Bank::new_for_tests(&genesis_config));
+
+        let owner = Pubkey::new_unique();
+        let stored = Pubkey::new_unique();
+        bank.store_account(&stored, &account(&owner, 10, vec![1, 2, 3]));
+        persist(&bank);
+
+        let scanned = scan_accounts_by_owner(&bank, &[owner, owner]).unwrap();
+
+        assert_eq!(pubkeys(&scanned[&owner]), pubkeys_of(&[stored]));
     }
 }

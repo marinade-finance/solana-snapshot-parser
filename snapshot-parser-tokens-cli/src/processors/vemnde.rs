@@ -1,5 +1,6 @@
 use crate::accounts::{Registrar, Voter};
-use crate::db_message::{DbMessage, OwnedSqlValue};
+use crate::db_message::{DbMessage, OwnedSqlParams, OwnedSqlValue};
+use crate::db_writer::DbWriter;
 use crate::filters::Filters;
 use crate::processors::Processor;
 use crate::progress_bar::ProgressCounter;
@@ -11,8 +12,7 @@ use borsh::BorshDeserialize;
 use log::{debug, error, warn};
 use rusqlite::ToSql;
 use solana_program::pubkey::Pubkey;
-use solana_runtime::bank::Bank;
-use solana_sdk::account::ReadableAccount;
+use solana_sdk::account::{AccountSharedData, ReadableAccount};
 use std::future::Future;
 use std::str::FromStr;
 use std::string::ToString;
@@ -25,10 +25,24 @@ pub const INSERT_VE_MNDE_ACCOUNT_QUERY: &str = "INSERT OR REPLACE INTO vemnde_ac
 const MARINADE_VSR_PROGRAM_ADDR: &str = "VoteMBhDCqGLRgYpp9o7DGyq81KNmwjXQRAHStjtJsS";
 const VOTER_ACCOUNT_LEN: usize = 2728;
 
+pub fn marinade_vsr_program_id() -> anyhow::Result<Pubkey> {
+    Pubkey::from_str(MARINADE_VSR_PROGRAM_ADDR).map_err(|e| {
+        anyhow!(
+            "Cannot pars VSR program address {}: {:?}",
+            MARINADE_VSR_PROGRAM_ADDR,
+            e
+        )
+    })
+}
+
+pub fn is_voter_account(account: &AccountSharedData) -> bool {
+    matches!(account.data().len(), VOTER_ACCOUNT_LEN)
+}
+
 pub struct ProcessorVeMnde {
-    bank: Arc<Bank>,
+    voter_accounts: Arc<Vec<(Pubkey, AccountSharedData)>>,
     db_sender: Sender<DbMessage>,
-    marinade_vsr_program_addr: Pubkey,
+    db_writer: DbWriter,
     vsr_registrar: Registrar,
     vemnde_counter: Arc<ProgressCounter>,
     current_ts: i64,
@@ -36,7 +50,7 @@ pub struct ProcessorVeMnde {
 
 impl ProcessorVeMnde {
     pub async fn new(
-        bank: Arc<Bank>,
+        voter_accounts: Arc<Vec<(Pubkey, AccountSharedData)>>,
         db_sender: Sender<DbMessage>,
         filters: &Filters,
         vemnde_progress_counter: Arc<ProgressCounter>,
@@ -46,17 +60,13 @@ impl ProcessorVeMnde {
         let vsr_registrar_data: &mut &[u8] = &mut vsr_registrar_vec.as_slice();
         let vsr_registrar: Registrar = Registrar::deserialize(vsr_registrar_data)?;
         let processor = Self {
-            bank,
+            voter_accounts,
+            db_writer: DbWriter::new(
+                db_sender.clone(),
+                INSERT_VE_MNDE_ACCOUNT_QUERY,
+                vemnde_progress_counter.clone(),
+            ),
             db_sender,
-            marinade_vsr_program_addr: Pubkey::from_str(MARINADE_VSR_PROGRAM_ADDR).map_err(
-                |e| {
-                    anyhow!(
-                        "Cannot pars VSR program address {}: {:?}",
-                        MARINADE_VSR_PROGRAM_ADDR,
-                        e
-                    )
-                },
-            )?,
             vemnde_counter: vemnde_progress_counter,
             vsr_registrar,
             current_ts,
@@ -84,40 +94,31 @@ impl ProcessorVeMnde {
     }
 
     pub async fn process(&mut self) -> anyhow::Result<()> {
-        debug!("Loading VSR registrar accounts from bank...");
-
-        let vsr_voter_accounts = self
-            .bank
-            .get_filtered_program_accounts(&self.marinade_vsr_program_addr, |account_data| {
-                matches!(account_data.data().len(), VOTER_ACCOUNT_LEN)
-            })?;
-
         debug!(
-            "VeMMNDE processor loaded {} Voter accounts",
-            vsr_voter_accounts.len()
+            "VeMMNDE processor got {} Voter accounts from the scan",
+            self.voter_accounts.len()
         );
-        for (pubkey, account) in vsr_voter_accounts {
+        for (pubkey, account) in self.voter_accounts.iter() {
             if let Ok(voter_account) = Voter::deserialize(&mut account.data()) {
-                insert_vemnde(
-                    &self.db_sender,
-                    &self.vemnde_counter,
-                    &pubkey,
+                match vemnde_row(
+                    pubkey,
                     account.owner(),
                     &self.vsr_registrar,
                     &voter_account,
                     self.current_ts,
-                )
-                .await
-                .unwrap_or_else(|e| {
-                    error!("Error: failed to insert voter account {}: {:?}", pubkey, e);
-                    0
-                });
+                ) {
+                    Ok(row) => self.db_writer.push(row).await?,
+                    Err(e) => error!(
+                        "Error: skipping voter account {} whose voting power does not add up: {:?}",
+                        pubkey, e
+                    ),
+                }
             } else {
                 warn!("Error: failed to unpack voter account: {:?}", pubkey);
             }
         }
 
-        Ok(())
+        self.db_writer.flush().await
     }
 }
 
@@ -137,17 +138,13 @@ impl ProcessorCallback for ProcessorVeMnde {
     }
 }
 
-pub async fn insert_vemnde(
-    db_sender: &Sender<DbMessage>,
-    progress_counter: &Arc<ProgressCounter>,
+pub fn vemnde_row(
     pubkey: &Pubkey,
     owner: &Pubkey,
     registrar: &Registrar,
     voter: &Voter,
     current_ts: i64,
-) -> anyhow::Result<usize> {
-    let (response_tx, response_rx) = oneshot::channel();
-
+) -> anyhow::Result<OwnedSqlParams> {
     let voting_power = voter
         .deposits
         .iter()
@@ -159,19 +156,34 @@ pub async fn insert_vemnde(
             )
             .map(|vp| sum.checked_add(vp).unwrap())
         })?;
-    let owned_params = sql_params![
+    Ok(sql_params![
         pubkey.to_string(),
         voter.voter_authority.to_string(),
         voting_power.to_string(),
         owner.to_string(),
-    ];
-    db_sender
-        .send(DbMessage::Execute {
-            query: INSERT_VE_MNDE_ACCOUNT_QUERY.to_string(),
-            params: owned_params,
-            response: response_tx,
+    ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::account::Account;
+
+    fn account_of(data_len: usize) -> AccountSharedData {
+        AccountSharedData::from(Account {
+            lamports: 1,
+            data: vec![0u8; data_len],
+            owner: marinade_vsr_program_id().unwrap(),
+            executable: false,
+            rent_epoch: 0,
         })
-        .await?;
-    progress_counter.inc();
-    response_rx.await?
+    }
+
+    #[test]
+    fn voter_accounts_are_recognised_by_size_alone() {
+        assert!(is_voter_account(&account_of(VOTER_ACCOUNT_LEN)));
+        assert!(!is_voter_account(&account_of(VOTER_ACCOUNT_LEN - 1)));
+        assert!(!is_voter_account(&account_of(VOTER_ACCOUNT_LEN + 1)));
+        assert!(!is_voter_account(&account_of(0)));
+    }
 }

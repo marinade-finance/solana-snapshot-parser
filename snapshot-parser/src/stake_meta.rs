@@ -52,17 +52,6 @@ pub struct StakeMetaCollection {
     pub stake_metas: Vec<StakeMeta>,
 }
 
-fn load_stake_accounts(bank: &Arc<Bank>) -> anyhow::Result<Vec<(Pubkey, AccountSharedData)>> {
-    let stake_accounts_raw = bank.get_program_accounts(&solana_stake_interface::program::ID)?;
-    info!("Stake processors loaded: {}", stake_accounts_raw.len());
-
-    Ok(stake_accounts_raw)
-}
-
-pub fn generate_stake_meta_collection(bank: &Arc<Bank>) -> anyhow::Result<StakeMetaCollection> {
-    generate_stake_meta_collection_for_accounts(bank, &load_stake_accounts(bank)?)
-}
-
 pub fn generate_stake_meta_collection_for_accounts(
     bank: &Arc<Bank>,
     stake_accounts: &[(Pubkey, AccountSharedData)],
