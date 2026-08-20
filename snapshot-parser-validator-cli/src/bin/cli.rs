@@ -52,9 +52,7 @@ struct Args {
     #[arg(long, env, action = clap::ArgAction::Set, default_value_t = true)]
     require_priority_fee_data: bool,
 
-    /// Treat a failed Jito stake meta collection as fatal; enable for clusters
-    /// (e.g. mainnet) whose downstream ETL consumes the uploaded file. Requires
-    /// --output-jito-stake-meta
+    /// Treat a failed Jito stake meta collection as fatal; requires --output-jito-stake-meta
     #[arg(long, env, action = clap::ArgAction::Set, default_value_t = false)]
     require_jito_stake_meta: bool,
 }
@@ -69,7 +67,6 @@ impl Args {
     }
 }
 
-// A side file so the pipeline can name the upload without reading the collection JSON
 fn program_hash_path(output_jito_stake_meta: &str) -> String {
     format!("{output_jito_stake_meta}.program-hash")
 }
@@ -197,7 +194,6 @@ fn main() -> anyhow::Result<()> {
         failure = failure.or(Some(outcome));
     }
 
-    // A best-effort backup of what Jito publishes itself, unless a cluster's ETL consumes it
     if let Some(handle) = jito_stake_meta_collection_handle {
         let outcome = match handle.join() {
             Ok(Ok(())) => {
@@ -342,7 +338,6 @@ mod tests {
         );
     }
 
-    // Replays the mainnet Parse step's exact argv
     #[test]
     fn parses_mainnet_parse_step_argv() {
         let args = Args::try_parse_from([

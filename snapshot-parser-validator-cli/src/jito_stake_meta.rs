@@ -47,7 +47,6 @@ pub struct JitoStakeMetaCollection {
     pub bank_hash: String,
     pub epoch: Epoch,
     pub slot: u64,
-    // Extra field on top of Jito's format; a collection produced by Jito has none
     #[serde(default)]
     pub jito_program_hash: String,
 }

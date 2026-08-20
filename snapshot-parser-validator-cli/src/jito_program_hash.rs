@@ -1,7 +1,3 @@
-//! POSIX cksum CRC-32 of the deployed tip-distribution and priority-fee programs, joined as
-//! `<crc_tip>.<crc_priority>`. Reproduce either half by hand with
-//! `solana program dump <program_id> f.so && cksum f.so`.
-
 use {
     crc::{Crc, CRC_32_CKSUM},
     log::info,
@@ -12,12 +8,8 @@ use {
     std::sync::Arc,
 };
 
-/// Poly 0x04C11DB7, non-reflected, complemented. The catalogued algorithm stops there; the
-/// byte count `cksum` folds in on top of it is [`cksum`]'s job.
 const CRC: Crc<u32> = Crc::<u32>::new(&CRC_32_CKSUM);
 
-/// What plain `cksum` prints: the CRC-32 of the bytes followed by their count, encoded base-256
-/// little-endian with leading zero bytes dropped (so an empty input folds in nothing).
 fn cksum(bytes: &[u8]) -> u32 {
     let mut digest = CRC.digest();
     digest.update(bytes);
@@ -73,7 +65,6 @@ pub fn compute_jito_program_hash(
     Ok(program_hash)
 }
 
-/// The bytes `solana program dump <program_id>` writes to a file
 fn program_dump(bank: &Arc<Bank>, program_id: Pubkey) -> anyhow::Result<Vec<u8>> {
     let program_account = bank.get_account(&program_id).ok_or_else(|| {
         anyhow::anyhow!("Jito program account {program_id} not found in the bank")
@@ -109,8 +100,6 @@ fn programdata_address(data: &[u8]) -> anyhow::Result<Pubkey> {
     }
 }
 
-// Everything after the metadata, zero padding of the over-allocated account included: the CLI
-// dumps the tail verbatim, so stripping anything here would break hand-reproduction
 fn dump_from_programdata(data: &[u8]) -> anyhow::Result<&[u8]> {
     match bincode::deserialize(data) {
         Ok(UpgradeableLoaderState::ProgramData { .. }) => {}
@@ -154,7 +143,6 @@ mod tests {
         data
     }
 
-    // Vectors produced by the coreutils `cksum` binary, so the crate constant stays pinned to it
     #[test]
     fn crc_matches_the_posix_cksum_binary() {
         assert_eq!(
@@ -165,10 +153,10 @@ mod tests {
         let all_bytes: Vec<u8> = (0..=255_u8).collect();
         assert_eq!(cksum(&all_bytes), 1_313_719_201);
 
-        // Without the byte count folded in the CRC is a different, non-reproducible number
         assert_eq!(
             CRC.checksum(b"The quick brown fox jumps over the lazy dog"),
-            917_995_649
+            917_995_649,
+            "without the byte count folded in the CRC is a different, non-reproducible number"
         );
     }
 
@@ -189,7 +177,6 @@ mod tests {
         assert!(dump[elf.len()..].iter().all(|byte| *byte == 0));
     }
 
-    // The same bytes fed to `cksum` after `solana program dump`
     #[test]
     fn checksums_the_dumped_bytes() {
         assert_eq!(
