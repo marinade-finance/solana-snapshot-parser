@@ -133,7 +133,6 @@ steps:
         - ./validators.json
         - ./stakes.json
         - ./jito-stake-meta.json
-        - ./jito-stake-meta.json.program-hash
     commands:
     - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
     - buildkite-agent artifact download --include-retried-jobs target/release/snapshot-parser-validator-cli .
@@ -150,7 +149,7 @@ steps:
       cp ./stakes.json "$$snapshot_dir/stakes.json"
       if [[ -f ./jito-stake-meta.json && -f ./jito-stake-meta.json.program-hash ]]; then
         cp ./jito-stake-meta.json "$$snapshot_dir/jito-stake-meta.json"
-        cp ./jito-stake-meta.json.program-hash "$$snapshot_dir/jito-stake-meta.json.program-hash"
+        buildkite-agent meta-data set --redacted-vars='' jito_program_hash "$(cat ./jito-stake-meta.json.program-hash)"
       else
         echo "Jito stake meta collection was not produced! The stakes ETL consumes this file, see the parser output above." | buildkite-agent annotate --style error --context "jito-stake-meta"
         exit 1
@@ -173,11 +172,11 @@ steps:
     - epoch=$(buildkite-agent meta-data get epoch)
     # Checked before the first upload, so a failing epoch leaves no partial data in GCS
     - |
-      if [[ ! -f "$$snapshot_dir/jito-stake-meta.json" || ! -f "$$snapshot_dir/jito-stake-meta.json.program-hash" ]]; then
+      if [[ ! -f "$$snapshot_dir/jito-stake-meta.json" ]]; then
         echo "Jito stake meta collection was not produced, nothing to upload for the stakes ETL!" | buildkite-agent annotate --style error --context "jito-stake-meta"
         exit 1
       fi
-      jito_program_hash=$(cat "$$snapshot_dir/jito-stake-meta.json.program-hash")
+      jito_program_hash=$(buildkite-agent meta-data get jito_program_hash)
       # The stakes ETL looks the object up by this name and silently skips a malformed one
       if [[ ! "$$jito_program_hash" =~ ^[0-9a-f]{16}$$ ]]; then
         echo "Jito program hash '$$jito_program_hash' is not 16 lowercase hex characters, refusing to name the uploaded stake meta by it!" | buildkite-agent annotate --style error --context "jito-stake-meta"
