@@ -147,26 +147,12 @@ steps:
     - |
       cp ./validators.json "$$snapshot_dir/validators.json"
       cp ./stakes.json "$$snapshot_dir/stakes.json"
-      shopt -s nullglob
-      jito_stake_meta=(./jito-stake-meta-*.json)
-      shopt -u nullglob
-      if [[ $${#jito_stake_meta[@]} -eq 0 ]]; then
-        echo "Jito stake meta collection was not produced! The stakes ETL consumes this file, see the parser output above." | buildkite-agent annotate --style error --context "jito-stake-meta"
+      if ! jito_stake_meta_name=$(./scripts/find-jito-stake-meta.bash .); then
+        echo "No single, validly named Jito stake meta collection was produced! The stakes ETL consumes this file, see the parser output above." | buildkite-agent annotate --style error --context "jito-stake-meta"
         exit 1
       fi
-      if [[ $${#jito_stake_meta[@]} -gt 1 ]]; then
-        echo "Several Jito stake meta collections found ($${jito_stake_meta[*]}), refusing to guess which one this build produced!" | buildkite-agent annotate --style error --context "jito-stake-meta"
-        exit 1
-      fi
-      jito_stake_meta_name=$(basename "$${jito_stake_meta[0]}")
-      jito_program_hash=$${jito_stake_meta_name#jito-stake-meta-}
-      jito_program_hash=$${jito_program_hash%.json}
-      # The stakes ETL looks the object up by this name
-      if [[ ! "$$jito_program_hash" =~ ^[0-9]{1,10}\.[0-9]{1,10}$$ ]]; then
-        echo "Jito stake meta collection '$$jito_stake_meta_name' is not named by a pair of dot-joined cksum CRC-32 decimals!" | buildkite-agent annotate --style error --context "jito-stake-meta"
-        exit 1
-      fi
-      cp "$${jito_stake_meta[0]}" "$$snapshot_dir/$$jito_stake_meta_name"
+      rm -f "$$snapshot_dir"/jito-stake-meta-*.json
+      cp "./$$jito_stake_meta_name" "$$snapshot_dir/$$jito_stake_meta_name"
 
   - wait: ~
 
@@ -185,28 +171,13 @@ steps:
     - epoch=$(buildkite-agent meta-data get epoch)
     # Checked before the first upload, so a failing epoch leaves no partial data in GCS
     - |
-      shopt -s nullglob
-      jito_stake_meta=("$$snapshot_dir"/jito-stake-meta-*.json)
-      shopt -u nullglob
-      if [[ $${#jito_stake_meta[@]} -eq 0 ]]; then
-        echo "Jito stake meta collection was not produced, nothing to upload for the stakes ETL!" | buildkite-agent annotate --style error --context "jito-stake-meta"
-        exit 1
-      fi
-      if [[ $${#jito_stake_meta[@]} -gt 1 ]]; then
-        echo "Several Jito stake meta collections found ($${jito_stake_meta[*]}), refusing to guess which one to upload!" | buildkite-agent annotate --style error --context "jito-stake-meta"
-        exit 1
-      fi
-      jito_stake_meta_name=$(basename "$${jito_stake_meta[0]}")
-      jito_program_hash=$${jito_stake_meta_name#jito-stake-meta-}
-      jito_program_hash=$${jito_program_hash%.json}
-      # The stakes ETL looks the object up by this name
-      if [[ ! "$$jito_program_hash" =~ ^[0-9]{1,10}\.[0-9]{1,10}$$ ]]; then
-        echo "Jito stake meta collection '$$jito_stake_meta_name' is not named by a pair of dot-joined cksum CRC-32 decimals, refusing to upload it!" | buildkite-agent annotate --style error --context "jito-stake-meta"
+      if ! jito_stake_meta_name=$(./scripts/find-jito-stake-meta.bash "$$snapshot_dir"); then
+        echo "No single, validly named Jito stake meta collection to upload for the stakes ETL, see the job log above." | buildkite-agent annotate --style error --context "jito-stake-meta"
         exit 1
       fi
     - gcloud storage cp "$$snapshot_dir/validators.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
     - gcloud storage cp "$$snapshot_dir/stakes.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
-    - gcloud storage cp "$${jito_stake_meta[0]}" "$GCLOUD_SNAPSHOTS/$$epoch/$$jito_stake_meta_name"
+    - gcloud storage cp "$$snapshot_dir/$$jito_stake_meta_name" "$GCLOUD_SNAPSHOTS/$$epoch/$$jito_stake_meta_name"
 
   - wait: ~
 
