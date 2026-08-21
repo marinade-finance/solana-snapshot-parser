@@ -37,9 +37,12 @@ name=$(basename "${found[0]}")
 program_hash=${name#jito-stake-meta-}
 program_hash=${program_hash%.json}
 
-if [[ ! $program_hash =~ ^[0-9]{1,10}\.[0-9]{1,10}$ ]]
+crc32_max=4294967295
+
+if [[ ! $program_hash =~ ^(0|[1-9][0-9]{0,9})\.(0|[1-9][0-9]{0,9})$ ]] \
+    || (( 10#${BASH_REMATCH[1]} > crc32_max || 10#${BASH_REMATCH[2]} > crc32_max ))
 then
-    echo "Jito stake meta collection '$name' is not named by a pair of dot-joined cksum CRC-32 decimals, which is the name the stakes ETL looks the object up by!" >&2
+    echo "Jito stake meta collection '$name' is not named by a pair of dot-joined canonical cksum CRC-32 decimals (no leading zeros, each at most $crc32_max), which is the name the stakes ETL looks the object up by!" >&2
     exit 1
 fi
 
