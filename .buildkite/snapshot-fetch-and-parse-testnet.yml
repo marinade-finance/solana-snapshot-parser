@@ -158,7 +158,8 @@ steps:
         --output-jito-stake-meta "./jito-stake-meta.json" \
         --tip-distribution-program "DzvGET57TAgEDxvm3ERUM4GNcsAJdqjDLCne9sdfY4wf" \
         --tip-payment-program "GJHtFqM9agxPmkeKjHny6qiRKrXZALvvFGiKf11QE7hy" \
-        --require-priority-fee-data false
+        --require-priority-fee-data false \
+        --require-jito-stake-meta false
     - |
       cp ./validators.json "$$snapshot_dir/validators.json"
       cp ./stakes.json "$$snapshot_dir/stakes.json"
