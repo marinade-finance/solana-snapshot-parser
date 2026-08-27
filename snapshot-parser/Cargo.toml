@@ -3,6 +3,7 @@ publish = false
 name = "snapshot-parser"
 version = "0.0.0"
 edition = "2021"
+license.workspace = true
 
 [dependencies]
 ahash = { workspace = true }
