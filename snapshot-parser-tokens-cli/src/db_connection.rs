@@ -168,6 +168,10 @@ impl SQLiteExecutor {
                         .await;
                     let _ = response.send(result);
                 }
+                DbMessage::RowsLost { query, count } => {
+                    error!("{} rows of `{}` never reached SQLite", count, query);
+                    self.rows_rejected = self.rows_rejected.saturating_add(count);
+                }
                 DbMessage::Shutdown { response } => {
                     let result = self.finalize().await;
                     if result.is_ok() {
@@ -187,7 +191,7 @@ impl SQLiteExecutor {
 
         if self.rows_rejected > 0 {
             anyhow::bail!(
-                "SQLite rejected {} rows during the run, \
+                "{} rows were not written during the run, \
                  refusing to promote an incomplete DB to {:?}",
                 self.rows_rejected,
                 self.db_path
@@ -235,6 +239,7 @@ fn mmap_size_pragma(size_mib: u64) -> i64 {
 mod tests {
     use super::*;
     use crate::db_message::{OwnedSqlParams, OwnedSqlValue};
+    use crate::db_writer::DbWriter;
     use crate::sql_params;
     use indicatif::MultiProgress;
     use rusqlite::ToSql;
@@ -381,7 +386,7 @@ mod tests {
 
         let err = finalized.expect_err("a run that lost rows must not be promoted");
         assert!(
-            err.to_string().contains("rejected 2 rows"),
+            err.to_string().contains("2 rows were not written"),
             "the error must name how many rows were lost: {err}"
         );
         assert!(
@@ -391,6 +396,40 @@ mod tests {
         assert!(
             !dir.temp_db_path().exists(),
             "the unpromoted temporary DB must be cleaned up"
+        );
+    }
+
+    #[tokio::test]
+    async fn rows_left_unflushed_by_a_dropped_writer_refuse_to_promote_the_db() {
+        let dir = TempDir::new();
+        let (sender, receiver) = mpsc::channel(8);
+        let executor =
+            SQLiteExecutor::new(dir.db_path(), None, None, None, counter(), receiver).unwrap();
+        let task = tokio::spawn(async move { executor.start().await });
+
+        let mut writer = DbWriter::new(sender.clone(), INSERT_ROW, counter());
+        writer.push(row("a", Some(1))).await.unwrap();
+        drop(writer);
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        sender
+            .send(DbMessage::Shutdown {
+                response: shutdown_tx,
+            })
+            .await
+            .unwrap();
+        let finalized = shutdown_rx.await.unwrap();
+        drop(sender);
+        task.await.unwrap();
+
+        let err = finalized.expect_err("a run that never flushed its rows must not be promoted");
+        assert!(
+            err.to_string().contains("1 rows were not written"),
+            "the error must name how many rows were lost: {err}"
+        );
+        assert!(
+            !dir.db_path().exists(),
+            "the output path must be left untouched"
         );
     }
 

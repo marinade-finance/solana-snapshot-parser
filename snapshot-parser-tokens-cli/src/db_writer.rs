@@ -93,11 +93,21 @@ impl DbWriter {
 
 impl Drop for DbWriter {
     fn drop(&mut self) {
-        if !self.rows.is_empty() {
+        let count = self.rows.len();
+        if count == 0 {
+            return;
+        }
+        if self
+            .db_sender
+            .try_send(DbMessage::RowsLost {
+                query: self.query.to_string(),
+                count,
+            })
+            .is_err()
+        {
             error!(
-                "{} buffered rows of `{}` were dropped unflushed",
-                self.rows.len(),
-                self.query
+                "{} buffered rows of `{}` were dropped unflushed and the loss could not be reported to SQLite",
+                count, self.query
             );
         }
     }

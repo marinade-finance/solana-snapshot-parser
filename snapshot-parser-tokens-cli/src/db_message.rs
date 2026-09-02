@@ -20,6 +20,10 @@ pub enum DbMessage {
         params: OwnedSqlParams,
         response: oneshot::Sender<anyhow::Result<usize>>,
     },
+    RowsLost {
+        query: String,
+        count: usize,
+    },
     Shutdown {
         response: oneshot::Sender<anyhow::Result<()>>,
     },
