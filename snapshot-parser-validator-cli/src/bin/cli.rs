@@ -31,7 +31,7 @@ struct Args {
     #[arg(long, env)]
     output_stake_meta_collection: String,
 
-    /// Path to write JSON file to for the Jito-format stake metas (e.g., jito-stake-meta.json)
+    /// Path to write JSON file to for the Jito-format stake metas; a literal {hash} in it is replaced by the Jito program hash (e.g., jito-stake-meta-{hash}.json)
     #[arg(long, env)]
     output_jito_stake_meta: Option<String>,
 
@@ -51,6 +51,26 @@ struct Args {
     /// clusters (e.g. testnet) that have no priority-fee accounts
     #[arg(long, env, action = clap::ArgAction::Set, default_value_t = true)]
     require_priority_fee_data: bool,
+
+    /// Treat a failed Jito stake meta collection as fatal; requires --output-jito-stake-meta
+    #[arg(long, env, action = clap::ArgAction::Set, default_value_t = false)]
+    require_jito_stake_meta: bool,
+}
+
+impl Args {
+    fn validate(&self) -> anyhow::Result<()> {
+        if self.require_jito_stake_meta && self.output_jito_stake_meta.is_none() {
+            anyhow::bail!("--require-jito-stake-meta true needs --output-jito-stake-meta, otherwise the required collection is never produced");
+        }
+
+        Ok(())
+    }
+}
+
+const JITO_PROGRAM_HASH_PLACEHOLDER: &str = "{hash}";
+
+fn resolve_output_path(output_jito_stake_meta: &str, jito_program_hash: &str) -> String {
+    output_jito_stake_meta.replace(JITO_PROGRAM_HASH_PLACEHOLDER, jito_program_hash)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -60,6 +80,7 @@ fn main() -> anyhow::Result<()> {
 
     info!("Starting snapshot parser...");
     let args: Args = Args::parse();
+    args.validate()?;
 
     info!("Creating bank from ledger path: {:?}", args.ledger_path);
     let bank = create_bank_from_ledger(&args.ledger_path)?;
@@ -121,6 +142,7 @@ fn main() -> anyhow::Result<()> {
 
     let tip_distribution_program = args.tip_distribution_program;
     let tip_payment_program = args.tip_payment_program;
+    let require_jito_stake_meta = args.require_jito_stake_meta;
     let jito_stake_meta_collection_handle = args.output_jito_stake_meta.map(|output_path| {
         let bank = bank.clone();
         let stake_accounts = scanned_accounts.stake.clone();
@@ -140,9 +162,13 @@ fn main() -> anyhow::Result<()> {
                         tip_payment_program,
                         require_priority_fee_data,
                     )?;
-                // Jito publishes this collection pretty-printed; parity is checked byte for byte
-                write_to_json_file(&jito_stake_meta_collection, &output_path)?;
-                info!("Jito stake meta collection finished.");
+                let resolved_output = resolve_output_path(
+                    &output_path,
+                    &jito_stake_meta_collection.jito_program_hash,
+                );
+                // Jito publishes this collection pretty-printed
+                write_to_json_file(&jito_stake_meta_collection, &resolved_output)?;
+                info!("Jito stake meta collection finished, written to {resolved_output}.");
                 Ok(())
             };
 
@@ -168,12 +194,20 @@ fn main() -> anyhow::Result<()> {
         failure = failure.or(Some(outcome));
     }
 
-    // The Jito collection is a backup of what Jito publishes itself, it must not fail the parsing
     if let Some(handle) = jito_stake_meta_collection_handle {
-        match handle.join() {
-            Ok(Ok(())) => info!("Jito stake meta collection completed successfully."),
-            Ok(Err(err)) => error!("Error in Jito stake meta thread: {err:?}"),
-            Err(err) => error!("Jito stake meta thread panicked: {err:?}"),
+        let outcome = match handle.join() {
+            Ok(Ok(())) => {
+                info!("Jito stake meta collection completed successfully.");
+                None
+            }
+            Ok(Err(err)) => Some(format!("Error in Jito stake meta thread: {err:?}")),
+            Err(err) => Some(format!("Jito stake meta thread panicked: {err:?}")),
+        };
+        if let Some(outcome) = outcome {
+            error!("{outcome}");
+            if require_jito_stake_meta {
+                failure = failure.or(Some(outcome));
+            }
         }
     }
 
@@ -191,6 +225,27 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use snapshot_parser::utils::read_from_json_file;
+    use snapshot_parser_validator_cli::jito_stake_meta::JitoStakeMetaCollection;
+    use std::fs;
+    use std::path::Path;
+
+    const HASH: &str = "2426260379.1775319386";
+
+    fn matches_pipeline_glob_and_guard(path: &str) -> bool {
+        let Some(hash) = path
+            .strip_prefix("./jito-stake-meta-")
+            .and_then(|name| name.strip_suffix(".json"))
+        else {
+            return false;
+        };
+        let Some((left, right)) = hash.split_once('.') else {
+            return false;
+        };
+        [left, right].iter().all(|part| {
+            (1..=10).contains(&part.len()) && part.bytes().all(|byte| byte.is_ascii_digit())
+        })
+    }
 
     // Replays the testnet Parse step's exact argv so the CLI contract is checked
     // without a snapshot download; would have caught --require-priority-fee-data
@@ -213,10 +268,15 @@ mod tests {
             "GJHtFqM9agxPmkeKjHny6qiRKrXZALvvFGiKf11QE7hy",
             "--require-priority-fee-data",
             "false",
+            "--require-jito-stake-meta",
+            "false",
         ])
         .expect("testnet Parse step argv must parse");
+        args.validate()
+            .expect("testnet Parse step argv must be valid");
 
         assert!(!args.require_priority_fee_data);
+        assert!(!args.require_jito_stake_meta);
         assert_eq!(
             args.tip_distribution_program,
             "DzvGET57TAgEDxvm3ERUM4GNcsAJdqjDLCne9sdfY4wf"
@@ -228,6 +288,11 @@ mod tests {
             "GJHtFqM9agxPmkeKjHny6qiRKrXZALvvFGiKf11QE7hy"
                 .parse::<Pubkey>()
                 .unwrap()
+        );
+        assert_eq!(
+            resolve_output_path(&args.output_jito_stake_meta.unwrap(), HASH),
+            "./jito-stake-meta.json",
+            "the testnet Parse step copies and uploads exactly this name"
         );
     }
 
@@ -244,6 +309,138 @@ mod tests {
             "./stakes.json",
         ])
         .expect("minimal argv must parse");
+        args.validate().expect("minimal argv must be valid");
         assert!(args.require_priority_fee_data);
+        assert!(!args.require_jito_stake_meta);
+    }
+
+    #[test]
+    fn require_jito_stake_meta_without_an_output_is_rejected() {
+        let args = Args::try_parse_from([
+            "snapshot-parser-validator-cli",
+            "--ledger-path",
+            ".",
+            "--output-validator-meta-collection",
+            "./validators.json",
+            "--output-stake-meta-collection",
+            "./stakes.json",
+            "--require-jito-stake-meta",
+            "true",
+        ])
+        .expect("argv parses, the combination is rejected by validation");
+
+        let err = args
+            .validate()
+            .expect_err("--require-jito-stake-meta true must not be a silent no-op");
+        assert!(
+            err.to_string().contains("--output-jito-stake-meta"),
+            "the error must name the missing flag: {err}"
+        );
+    }
+
+    #[test]
+    fn not_requiring_jito_stake_meta_without_an_output_is_allowed() {
+        let args = Args::try_parse_from([
+            "snapshot-parser-validator-cli",
+            "--ledger-path",
+            ".",
+            "--output-validator-meta-collection",
+            "./validators.json",
+            "--output-stake-meta-collection",
+            "./stakes.json",
+            "--require-jito-stake-meta",
+            "false",
+        ])
+        .expect("argv must parse");
+        args.validate().expect("argv must be valid");
+        assert!(!args.require_jito_stake_meta);
+    }
+
+    #[test]
+    fn the_placeholder_is_substituted_wherever_it_stands() {
+        assert_eq!(
+            resolve_output_path("./jito-stake-meta-{hash}.json", HASH),
+            "./jito-stake-meta-2426260379.1775319386.json"
+        );
+        assert_eq!(
+            resolve_output_path("/mnt/out/{hash}/jito-stake-meta.json", HASH),
+            "/mnt/out/2426260379.1775319386/jito-stake-meta.json"
+        );
+        assert_eq!(resolve_output_path("{hash}", HASH), "2426260379.1775319386");
+    }
+
+    #[test]
+    fn a_value_without_the_placeholder_is_the_path_written() {
+        assert_eq!(
+            resolve_output_path("./jito-stake-meta.json", HASH),
+            "./jito-stake-meta.json"
+        );
+        assert_eq!(
+            resolve_output_path("/mnt/out/jito-stake-meta", HASH),
+            "/mnt/out/jito-stake-meta"
+        );
+    }
+
+    #[test]
+    fn the_written_file_is_named_by_the_hash_it_carries() {
+        let dir = std::env::temp_dir().join(format!(
+            "jito-stake-meta-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let collection = JitoStakeMetaCollection {
+            stake_metas: vec![],
+            tip_distribution_program_id: Pubkey::new_unique(),
+            priority_fee_distribution_program_id: Pubkey::new_unique(),
+            bank_hash: "hash".to_string(),
+            epoch: 1002,
+            slot: 433295999,
+            jito_program_hash: HASH.to_string(),
+        };
+
+        let out = resolve_output_path(
+            &dir.join("jito-stake-meta-{hash}.json").to_string_lossy(),
+            &collection.jito_program_hash,
+        );
+        write_to_json_file(&collection, &out).unwrap();
+
+        let written: JitoStakeMetaCollection = read_from_json_file(&out).unwrap();
+        assert_eq!(
+            Path::new(&out).file_name().unwrap().to_string_lossy(),
+            format!("jito-stake-meta-{}.json", written.jito_program_hash),
+            "the GCS object name the stakes ETL derives from the hash must be the written file"
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn parses_mainnet_parse_step_argv() {
+        let args = Args::try_parse_from([
+            "snapshot-parser-validator-cli",
+            "--ledger-path",
+            ".",
+            "--output-validator-meta-collection",
+            "./validators.json",
+            "--output-stake-meta-collection",
+            "./stakes.json",
+            "--output-jito-stake-meta",
+            "./jito-stake-meta-{hash}.json",
+            "--require-jito-stake-meta",
+            "true",
+        ])
+        .expect("mainnet Parse step argv must parse");
+        args.validate()
+            .expect("mainnet Parse step argv must be valid");
+
+        assert!(args.require_jito_stake_meta);
+        assert!(args.require_priority_fee_data);
+        let out = resolve_output_path(&args.output_jito_stake_meta.unwrap(), HASH);
+        assert_eq!(out, "./jito-stake-meta-2426260379.1775319386.json");
+        assert!(
+            matches_pipeline_glob_and_guard(&out),
+            "the Parse step globs ./jito-stake-meta-*.json and guards the name: {out}"
+        );
     }
 }

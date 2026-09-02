@@ -7,16 +7,19 @@ publish = false
 name = "snapshot-parser-validator-cli"
 version = "0.0.0"
 edition = "2021"
+license.workspace = true
 
 [dependencies]
 ahash = { workspace = true }
 anyhow = { workspace = true }
 bincode = { workspace = true }
 clap = { workspace = true }
+crc = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true }
 snapshot-parser = { workspace = true }
+solana-loader-v3-interface = { workspace = true }
 solana-runtime = { workspace = true }
 solana-accounts-db = { workspace = true }
 solana-program = { workspace = true }

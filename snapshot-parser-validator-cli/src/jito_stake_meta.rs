@@ -2,6 +2,7 @@ use crate::jito_mev::TIP_DISTRIBUTION_ACCOUNT_DISCRIMINATOR;
 use crate::jito_priority_fee::{
     JITO_PRIORITY_FEE_DISTRIBUTION_PROGRAM, PRIORITY_FEE_DISTRIBUTION_ACCOUNT_DISCRIMINATOR,
 };
+use crate::jito_program_hash::compute_jito_program_hash;
 use crate::utils::jito_parser::{
     get_epoch_created_at, read_jito_commission_and_epoch, read_merkle_root_upload_authority,
 };
@@ -46,6 +47,8 @@ pub struct JitoStakeMetaCollection {
     pub bank_hash: String,
     pub epoch: Epoch,
     pub slot: u64,
+    #[serde(default)]
+    pub jito_program_hash: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -147,6 +150,13 @@ pub fn generate_jito_stake_meta_collection(
 ) -> anyhow::Result<JitoStakeMetaCollection> {
     assert!(bank.is_frozen());
     let epoch = bank.epoch();
+
+    let priority_fee_distribution_program: Pubkey =
+        JITO_PRIORITY_FEE_DISTRIBUTION_PROGRAM.try_into()?;
+    let program_hash = compute_jito_program_hash(
+        bank,
+        &[tip_distribution_program, priority_fee_distribution_program],
+    )?;
 
     let last_slot_in_epoch = bank.epoch_schedule().get_last_slot_in_epoch(epoch);
     if bank.slot() != last_slot_in_epoch {
@@ -281,10 +291,11 @@ pub fn generate_jito_stake_meta_collection(
     Ok(JitoStakeMetaCollection {
         stake_metas,
         tip_distribution_program_id: tip_distribution_program,
-        priority_fee_distribution_program_id: JITO_PRIORITY_FEE_DISTRIBUTION_PROGRAM.try_into()?,
+        priority_fee_distribution_program_id: priority_fee_distribution_program,
         bank_hash: bank.hash().to_string(),
         epoch,
         slot: bank.slot(),
+        jito_program_hash: program_hash.combined,
     })
 }
 
@@ -505,11 +516,13 @@ mod tests {
             bank_hash: "hash".to_string(),
             epoch: 1002,
             slot: 433295999,
+            jito_program_hash: "2426260379.1775319386".to_string(),
         };
 
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&collection).unwrap()).unwrap();
         assert_eq!(json["epoch"], 1002);
+        assert_eq!(json["jito_program_hash"], "2426260379.1775319386");
         assert_eq!(
             json["tip_distribution_program_id"],
             JITO_PROGRAM.to_string()
@@ -528,6 +541,20 @@ mod tests {
         );
         assert!(stake_meta["maybe_priority_fee_distribution_meta"].is_null());
         assert_eq!(stake_meta["delegations"][0]["lamports_delegated"], 1000);
+    }
+
+    #[test]
+    fn reads_a_collection_without_the_program_hash() {
+        let jito_json = serde_json::json!({
+            "stake_metas": [],
+            "tip_distribution_program_id": JITO_PROGRAM,
+            "priority_fee_distribution_program_id": JITO_PRIORITY_FEE_DISTRIBUTION_PROGRAM,
+            "bank_hash": "hash",
+            "epoch": 1002,
+            "slot": 433295999,
+        });
+        let collection: JitoStakeMetaCollection = serde_json::from_value(jito_json).unwrap();
+        assert_eq!(collection.jito_program_hash, "");
     }
 
     #[test]

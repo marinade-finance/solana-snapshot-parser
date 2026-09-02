@@ -132,7 +132,7 @@ steps:
     artifact_paths:
         - ./validators.json
         - ./stakes.json
-        - ./jito-stake-meta.json
+        - ./jito-stake-meta-*.json
     commands:
     - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
     - buildkite-agent artifact download --include-retried-jobs target/release/snapshot-parser-validator-cli .
@@ -142,15 +142,17 @@ steps:
         --ledger-path "$$snapshot_dir" \
         --output-validator-meta-collection "./validators.json" \
         --output-stake-meta-collection "./stakes.json" \
-        --output-jito-stake-meta "./jito-stake-meta.json"
+        --output-jito-stake-meta "./jito-stake-meta-{hash}.json" \
+        --require-jito-stake-meta true
     - |
       cp ./validators.json "$$snapshot_dir/validators.json"
       cp ./stakes.json "$$snapshot_dir/stakes.json"
-      if [[ -f ./jito-stake-meta.json ]]; then
-        cp ./jito-stake-meta.json "$$snapshot_dir/jito-stake-meta.json"
-      else
-        echo "Jito stake meta collection was not produced!" | buildkite-agent annotate --style warning --context "jito-stake-meta"
+      if ! jito_stake_meta_name=$(./scripts/find-jito-stake-meta.bash .); then
+        echo "No single, validly named Jito stake meta collection was produced! The stakes ETL consumes this file, see the parser output above." | buildkite-agent annotate --style error --context "jito-stake-meta"
+        exit 1
       fi
+      rm -f "$$snapshot_dir"/jito-stake-meta-*.json
+      cp "./$$jito_stake_meta_name" "$$snapshot_dir/$$jito_stake_meta_name"
 
   - wait: ~
 
@@ -167,14 +169,15 @@ steps:
     commands:
     - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
     - epoch=$(buildkite-agent meta-data get epoch)
+    # Checked before the first upload, so a failing epoch leaves no partial data in GCS
+    - |
+      if ! jito_stake_meta_name=$(./scripts/find-jito-stake-meta.bash "$$snapshot_dir"); then
+        echo "No single, validly named Jito stake meta collection to upload for the stakes ETL, see the job log above." | buildkite-agent annotate --style error --context "jito-stake-meta"
+        exit 1
+      fi
     - gcloud storage cp "$$snapshot_dir/validators.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
     - gcloud storage cp "$$snapshot_dir/stakes.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
-    - |
-      if [[ -f "$$snapshot_dir/jito-stake-meta.json" ]]; then
-        gcloud storage cp "$$snapshot_dir/jito-stake-meta.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
-      else
-        echo "Jito stake meta collection was not produced!"
-      fi
+    - gcloud storage cp "$$snapshot_dir/$$jito_stake_meta_name" "$GCLOUD_SNAPSHOTS/$$epoch/$$jito_stake_meta_name"
 
   - wait: ~
 
