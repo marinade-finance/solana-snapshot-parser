@@ -36,10 +36,6 @@ impl<'a> OwnerFilter<'a> {
             predicate: Some(Box::new(predicate)),
         }
     }
-
-    pub fn owner(&self) -> &Pubkey {
-        &self.owner
-    }
 }
 
 // Finds all accounts owned by the given programs in one pass over the storage files.

@@ -9,7 +9,6 @@ use std::str::FromStr;
 
 #[derive(Debug, Deserialize, Serialize)]
 struct FiltersData {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     account_owners: Option<String>,
     account_mints: String,
     vsr_registrar_data: String,
