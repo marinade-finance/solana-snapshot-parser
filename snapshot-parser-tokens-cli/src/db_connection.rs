@@ -91,10 +91,10 @@ impl SQLiteExecutor {
 
     pub async fn execute_rows(&mut self, sql: &str, rows: Vec<OwnedSqlParams>) -> BatchOutcome {
         let mut outcome = BatchOutcome::default();
-        for params in rows {
-            match self.execute(sql, params_from_iter(params.iter())).await {
-                Ok(_) => outcome.rows_written += 1,
-                Err(_) => outcome.rows_failed += 1,
+        for (index, params) in rows.into_iter().enumerate() {
+            if let Err(err) = self.execute(sql, params_from_iter(params.iter())).await {
+                error!("row {} of `{}` rejected: {}", index, sql, err);
+                outcome.rows_failed += 1;
             }
         }
         self.rows_rejected = self.rows_rejected.saturating_add(outcome.rows_failed);
@@ -359,13 +359,7 @@ mod tests {
         )
         .await;
 
-        assert_eq!(
-            outcomes,
-            vec![BatchOutcome {
-                rows_written: 2,
-                rows_failed: 1
-            }]
-        );
+        assert_eq!(outcomes, vec![BatchOutcome { rows_failed: 1 }]);
         assert_eq!(progress.get(), 2);
         finalized.expect_err("a run that lost a row must not be finalized");
     }
@@ -470,14 +464,8 @@ mod tests {
         assert_eq!(
             outcomes,
             vec![
-                BatchOutcome {
-                    rows_written: 2,
-                    rows_failed: 0
-                },
-                BatchOutcome {
-                    rows_written: 1,
-                    rows_failed: 0
-                }
+                BatchOutcome { rows_failed: 0 },
+                BatchOutcome { rows_failed: 0 }
             ]
         );
         assert_eq!(
@@ -501,13 +489,7 @@ mod tests {
             run_executor(dir.db_path(), Some(2), counter(), vec![rows]).await;
 
         finalized.unwrap();
-        assert_eq!(
-            outcomes,
-            vec![BatchOutcome {
-                rows_written: 5,
-                rows_failed: 0
-            }]
-        );
+        assert_eq!(outcomes, vec![BatchOutcome { rows_failed: 0 }]);
         assert_eq!(stored_rows(&dir.db_path()).len(), 5);
     }
 

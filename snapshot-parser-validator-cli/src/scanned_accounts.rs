@@ -1,8 +1,10 @@
 use crate::jito_priority_fee::JITO_PRIORITY_FEE_DISTRIBUTION_PROGRAM;
 use {
-    log::info, snapshot_parser::account_scan::scan_accounts_by_owner,
-    solana_program::pubkey::Pubkey, solana_runtime::bank::Bank,
-    solana_sdk::account::AccountSharedData, std::collections::HashSet, std::sync::Arc,
+    snapshot_parser::account_scan::{scan_accounts_by_owner, verify_scan_matches},
+    solana_program::pubkey::Pubkey,
+    solana_runtime::bank::Bank,
+    solana_sdk::account::AccountSharedData,
+    std::sync::Arc,
 };
 
 pub struct ScannedAccounts {
@@ -52,33 +54,10 @@ pub fn scan_required_accounts(
     Ok(scanned_accounts)
 }
 
-// Costs one extra full accounts-index scan per owner, which is what the single pass exists to avoid
 fn verify_matches_program_accounts(
     bank: &Arc<Bank>,
     owner: &Pubkey,
     scanned: &[(Pubkey, AccountSharedData)],
 ) -> anyhow::Result<()> {
-    let expected = bank.get_program_accounts(owner)?;
-    anyhow::ensure!(
-        scanned.len() == expected.len(),
-        "Account scan mismatch for owner {owner}: single pass produced {} accounts, get_program_accounts produced {}",
-        scanned.len(),
-        expected.len()
-    );
-
-    let scanned_pubkeys: HashSet<Pubkey> = scanned.iter().map(|(pubkey, _)| *pubkey).collect();
-    let expected_pubkeys: HashSet<Pubkey> = expected.iter().map(|(pubkey, _)| *pubkey).collect();
-    anyhow::ensure!(
-        scanned_pubkeys == expected_pubkeys,
-        "Account scan pubkey set mismatch for owner {owner}: {} only in single pass, {} only in get_program_accounts",
-        scanned_pubkeys.difference(&expected_pubkeys).count(),
-        expected_pubkeys.difference(&scanned_pubkeys).count()
-    );
-
-    info!(
-        "Account scan verified against get_program_accounts for owner {}: {} accounts",
-        owner,
-        scanned.len()
-    );
-    Ok(())
+    verify_scan_matches(owner, scanned, &bank.get_program_accounts(owner)?)
 }

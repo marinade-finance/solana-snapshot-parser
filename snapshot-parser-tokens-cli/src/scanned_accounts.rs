@@ -3,7 +3,7 @@ use crate::processors::{
     is_token_account_of_mints, is_voter_account, marinade_vsr_program_id, spl_token_program_id,
 };
 use snapshot_parser::account_scan::{
-    scan_accounts_by_owner_filtered, AccountPredicate, OwnerFilter,
+    scan_accounts_by_owner_filtered, verify_scan_matches, AccountPredicate, OwnerFilter,
 };
 use solana_program::pubkey::Pubkey;
 use solana_runtime::bank::Bank;
@@ -43,11 +43,13 @@ fn required_owner_predicates(
 fn take_required(
     scanned: &mut ScannedByOwner,
     owner: &Pubkey,
+    what: &str,
 ) -> anyhow::Result<Arc<Vec<(Pubkey, AccountSharedData)>>> {
     let accounts = scanned.remove(owner).unwrap_or_default();
     anyhow::ensure!(
         !accounts.is_empty(),
-        "Not expected. No accounts scanned for owner {owner}. Evaluate the snapshot data."
+        "Not expected. No {what} scanned (owner {owner}). \
+         Evaluate the snapshot data and the filters file."
     );
     Ok(Arc::new(accounts))
 }
@@ -55,6 +57,7 @@ fn take_required(
 pub fn scan_required_accounts(
     bank: &Arc<Bank>,
     filters: &Filters,
+    verify: bool,
 ) -> anyhow::Result<ScannedAccounts> {
     let owner_predicates = required_owner_predicates(filters)?;
     let [token_program, vsr_program, stake_program] =
@@ -68,11 +71,49 @@ pub fn scan_required_accounts(
         .collect();
 
     let mut scanned = scan_accounts_by_owner_filtered(bank, &owner_filters)?;
-    Ok(ScannedAccounts {
-        token: take_required(&mut scanned, &token_program)?,
-        voter: take_required(&mut scanned, &vsr_program)?,
-        stake: take_required(&mut scanned, &stake_program)?,
-    })
+    let scanned_accounts = ScannedAccounts {
+        token: take_required(
+            &mut scanned,
+            &token_program,
+            "token accounts of the configured account_mints",
+        )?,
+        voter: take_required(&mut scanned, &vsr_program, "VSR voter accounts")?,
+        stake: take_required(&mut scanned, &stake_program, "stake accounts")?,
+    };
+
+    if verify {
+        verify_scan(bank, filters, &scanned_accounts)?;
+    }
+    Ok(scanned_accounts)
+}
+
+fn verify_scan(
+    bank: &Arc<Bank>,
+    filters: &Filters,
+    scanned: &ScannedAccounts,
+) -> anyhow::Result<()> {
+    let token_program = spl_token_program_id();
+    verify_scan_matches(
+        &token_program,
+        &scanned.token,
+        &bank.get_filtered_program_accounts(&token_program, |account| {
+            is_token_account_of_mints(&filters.account_mints, account)
+        })?,
+    )?;
+
+    let vsr_program = marinade_vsr_program_id()?;
+    verify_scan_matches(
+        &vsr_program,
+        &scanned.voter,
+        &bank.get_filtered_program_accounts(&vsr_program, is_voter_account)?,
+    )?;
+
+    let stake_program = solana_stake_interface::program::ID;
+    verify_scan_matches(
+        &stake_program,
+        &scanned.stake,
+        &bank.get_program_accounts(&stake_program)?,
+    )
 }
 
 #[cfg(test)]
@@ -159,12 +200,16 @@ mod tests {
                 ScannedByOwner::new(),
                 ScannedByOwner::from([(owner, Vec::new())]),
             ] {
-                let err = take_required(&mut scanned, &owner)
+                let err = take_required(&mut scanned, &owner, "voter accounts")
                     .expect_err("an owner without a single account must not be promoted")
                     .to_string();
                 assert!(
                     err.contains(&owner.to_string()),
                     "the error must name the owner: {err}"
+                );
+                assert!(
+                    err.contains("voter accounts"),
+                    "the error must name what came back empty, not only the program: {err}"
                 );
             }
         }
@@ -177,7 +222,7 @@ mod tests {
         let mut scanned =
             ScannedByOwner::from([(owner, vec![(pubkey, account_of(vec![1, 2, 3]))])]);
 
-        let taken = take_required(&mut scanned, &owner).unwrap();
+        let taken = take_required(&mut scanned, &owner, "stake accounts").unwrap();
 
         assert_eq!(taken.len(), 1);
         assert_eq!(taken[0].0, pubkey);

@@ -150,11 +150,20 @@ pub fn vemnde_row(
         .iter()
         .filter(|d| d.is_used)
         .try_fold(0u64, |sum, d| {
-            d.voting_power(
-                &registrar.voting_mints[d.voting_mint_config_idx as usize],
-                current_ts,
-            )
-            .map(|vp| sum.checked_add(vp).unwrap())
+            // account data is untrusted: anyone can assign a 2728 byte account to the VSR program
+            let voting_mint = registrar
+                .voting_mints
+                .get(d.voting_mint_config_idx as usize)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "deposit points at voting mint {} of {}",
+                        d.voting_mint_config_idx,
+                        registrar.voting_mints.len()
+                    )
+                })?;
+            let vp = d.voting_power(voting_mint, current_ts)?;
+            sum.checked_add(vp)
+                .ok_or_else(|| anyhow!("voting power sum overflows u64"))
         })?;
     Ok(sql_params![
         pubkey.to_string(),
@@ -185,5 +194,45 @@ mod tests {
         assert!(!is_voter_account(&account_of(VOTER_ACCOUNT_LEN - 1)));
         assert!(!is_voter_account(&account_of(VOTER_ACCOUNT_LEN + 1)));
         assert!(!is_voter_account(&account_of(0)));
+    }
+
+    fn zeroed_registrar() -> Registrar {
+        Registrar::deserialize(&mut vec![0u8; 4096].as_slice()).unwrap()
+    }
+
+    fn voter_with_used_deposit(voting_mint_config_idx: u8) -> Voter {
+        const DEPOSITS_OFFSET: usize = 8 + 32 + 32;
+        const IS_USED_OFFSET: usize = 8 + 8 + 1 + 15 + 8 + 8;
+        let mut data = vec![0u8; VOTER_ACCOUNT_LEN];
+        data[DEPOSITS_OFFSET + IS_USED_OFFSET] = 1;
+        data[DEPOSITS_OFFSET + IS_USED_OFFSET + 2] = voting_mint_config_idx;
+        Voter::deserialize(&mut data.as_slice()).unwrap()
+    }
+
+    fn row_of(voter: &Voter) -> anyhow::Result<OwnedSqlParams> {
+        vemnde_row(
+            &Pubkey::new_unique(),
+            &Pubkey::new_unique(),
+            &zeroed_registrar(),
+            voter,
+            0,
+        )
+    }
+
+    #[test]
+    fn a_deposit_pointing_past_the_registrar_mints_is_an_error_not_a_panic() {
+        let Err(err) = row_of(&voter_with_used_deposit(4)) else {
+            panic!("a deposit that indexes past the registrar must not be answered");
+        };
+
+        assert!(
+            err.to_string().contains("voting mint 4 of 4"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn a_deposit_inside_the_registrar_mints_is_priced() {
+        row_of(&voter_with_used_deposit(3)).unwrap();
     }
 }

@@ -51,6 +51,10 @@ struct Args {
     /// Processing in transaction bulks. This is number of inserts in one transaction.
     #[arg(long)]
     sqlite_tx_bulk: Option<u16>,
+
+    /// Cross-check the single-pass account scan against the accounts index; costs a scan per owner
+    #[arg(long, env, default_value_t = false)]
+    verify_account_scan: bool,
 }
 
 #[tokio::main]
@@ -87,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     info!("Scanning accounts from the bank in a single pass over the storages...");
-    let scanned_accounts = scan_required_accounts(&bank, &filters)?;
+    let scanned_accounts = scan_required_accounts(&bank, &filters, args.verify_account_scan)?;
 
     info!("Creating progress bar instance...");
     let stats = Stats::new();

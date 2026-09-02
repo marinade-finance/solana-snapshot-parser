@@ -237,10 +237,7 @@ mod tests {
                 match msg {
                     DbMessage::Execute { rows, response, .. } => {
                         rows_received += rows.len();
-                        let _ = response.send(BatchOutcome {
-                            rows_written: rows.len(),
-                            rows_failed: 0,
-                        });
+                        let _ = response.send(BatchOutcome { rows_failed: 0 });
                     }
                     _ => panic!("unexpected message"),
                 }

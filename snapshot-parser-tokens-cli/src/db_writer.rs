@@ -77,16 +77,15 @@ impl DbWriter {
             )
         })?;
 
-        if outcome.rows_failed > 0 {
-            error!(
-                "SQLite rejected {} of {} rows of `{}`",
-                outcome.rows_failed, batch_len, self.query
-            );
-        }
-        debug!(
-            "Batch of {} rows written for `{}` ({} failed)",
-            batch_len, self.query, outcome.rows_failed
+        // the run is already doomed once a row is lost, so stop here instead of at finalize
+        anyhow::ensure!(
+            outcome.rows_failed == 0,
+            "SQLite rejected {} of {} rows of `{}`",
+            outcome.rows_failed,
+            batch_len,
+            self.query
         );
+        debug!("Batch of {} rows written for `{}`", batch_len, self.query);
         Ok(())
     }
 }
@@ -140,10 +139,7 @@ mod tests {
                     DbMessage::Execute { rows, response, .. } => {
                         batches.push(rows.len());
                         let rows_failed = failures_per_batch.min(rows.len());
-                        let _ = response.send(BatchOutcome {
-                            rows_written: rows.len() - rows_failed,
-                            rows_failed,
-                        });
+                        let _ = response.send(BatchOutcome { rows_failed });
                     }
                     _ => panic!("unexpected message"),
                 }
@@ -175,22 +171,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_batch_is_acknowledged_once_and_rejected_rows_are_only_counted() {
+    async fn a_rejected_row_fails_the_producer_at_its_own_batch() {
         let (sender, receiver) = mpsc::channel(4);
         let collector = spawn_collector(receiver, 1);
         let progress = counter();
         let mut writer = DbWriter::with_batch_size(sender, QUERY, progress.clone(), 3);
 
-        for i in 0..6i64 {
-            writer.push(sql_params![i]).await.unwrap();
-        }
-        writer.flush().await.unwrap();
+        writer.push(sql_params![0i64]).await.unwrap();
+        writer.push(sql_params![1i64]).await.unwrap();
+        let err = writer
+            .push(sql_params![2i64])
+            .await
+            .expect_err("a batch SQLite rejected a row from must not be reported as written");
 
+        assert!(
+            err.to_string().contains("SQLite rejected 1 of 3 rows"),
+            "unexpected error: {err}"
+        );
         drop(writer);
-        assert_eq!(collector.await.unwrap(), vec![3, 3]);
+        assert_eq!(
+            collector.await.unwrap(),
+            vec![3],
+            "no further batch may be shipped after the run is already lost"
+        );
         assert_eq!(
             progress.get(),
-            6,
+            3,
             "progress counts rows handed over, not rows SQLite accepted"
         );
     }

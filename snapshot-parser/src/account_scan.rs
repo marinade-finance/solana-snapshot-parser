@@ -161,6 +161,37 @@ pub fn scan_accounts_by_owner_filtered(
     Ok(collected)
 }
 
+// The caller supplies `expected` from the accounts index, which is the thing the single pass
+// exists to avoid: this is a deliberate second scan, only worth paying on demand.
+pub fn verify_scan_matches(
+    owner: &Pubkey,
+    scanned: &[(Pubkey, AccountSharedData)],
+    expected: &[(Pubkey, AccountSharedData)],
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        scanned.len() == expected.len(),
+        "Account scan mismatch for owner {owner}: single pass produced {} accounts, the index scan produced {}",
+        scanned.len(),
+        expected.len()
+    );
+
+    let scanned_pubkeys: HashSet<Pubkey> = scanned.iter().map(|(pubkey, _)| *pubkey).collect();
+    let expected_pubkeys: HashSet<Pubkey> = expected.iter().map(|(pubkey, _)| *pubkey).collect();
+    anyhow::ensure!(
+        scanned_pubkeys == expected_pubkeys,
+        "Account scan pubkey set mismatch for owner {owner}: {} only in single pass, {} only in the index scan",
+        scanned_pubkeys.difference(&expected_pubkeys).count(),
+        expected_pubkeys.difference(&scanned_pubkeys).count()
+    );
+
+    info!(
+        "Account scan verified against the index scan for owner {}: {} accounts",
+        owner,
+        scanned.len()
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -480,5 +511,34 @@ mod tests {
         let scanned = scan_accounts_by_owner(&bank, &[owner, owner]).unwrap();
 
         assert_eq!(pubkeys(&scanned[&owner]), pubkeys_of(&[stored]));
+    }
+
+    #[test]
+    fn a_scan_that_diverges_from_the_index_does_not_verify() {
+        let owner = Pubkey::new_unique();
+        let shared = (Pubkey::new_unique(), account(&owner, 10, vec![1]));
+        let only_scanned = (Pubkey::new_unique(), account(&owner, 10, vec![2]));
+        let only_expected = (Pubkey::new_unique(), account(&owner, 10, vec![3]));
+
+        let one = std::slice::from_ref(&shared);
+        verify_scan_matches(&owner, one, one).unwrap();
+
+        let err = verify_scan_matches(&owner, one, &[shared.clone(), only_expected.clone()])
+            .expect_err("a scan short of the index must not verify");
+        assert!(
+            err.to_string().contains("produced 1 accounts"),
+            "unexpected error: {err}"
+        );
+
+        let err = verify_scan_matches(
+            &owner,
+            &[shared.clone(), only_scanned],
+            &[shared, only_expected],
+        )
+        .expect_err("a scan of the same size but a different set must not verify");
+        assert!(
+            err.to_string().contains("pubkey set mismatch"),
+            "unexpected error: {err}"
+        );
     }
 }

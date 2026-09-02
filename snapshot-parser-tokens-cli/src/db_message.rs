@@ -5,7 +5,6 @@ pub type OwnedSqlParams = Vec<Box<dyn ToSql + Send + Sync>>;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct BatchOutcome {
-    pub rows_written: usize,
     pub rows_failed: usize,
 }
 
