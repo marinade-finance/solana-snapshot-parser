@@ -23,7 +23,7 @@ use tokio::sync::oneshot;
 pub const VE_MNDE_ACCOUNT_TABLE: &str = "vemnde_accounts";
 pub const INSERT_VE_MNDE_ACCOUNT_QUERY: &str = "INSERT OR REPLACE INTO vemnde_accounts (pubkey, voter_authority, voting_power, owner) SELECT ?, ?, ?, ?;";
 const MARINADE_VSR_PROGRAM_ADDR: &str = "VoteMBhDCqGLRgYpp9o7DGyq81KNmwjXQRAHStjtJsS";
-const VOTER_ACCOUNT_LEN: usize = 2728;
+pub const VOTER_ACCOUNT_LEN: usize = 2728;
 
 pub fn marinade_vsr_program_id() -> anyhow::Result<Pubkey> {
     Pubkey::from_str(MARINADE_VSR_PROGRAM_ADDR).map_err(|e| {
