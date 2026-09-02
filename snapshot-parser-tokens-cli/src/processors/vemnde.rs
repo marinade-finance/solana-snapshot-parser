@@ -35,8 +35,8 @@ pub fn marinade_vsr_program_id() -> anyhow::Result<Pubkey> {
     })
 }
 
-pub fn is_voter_account(account: &AccountSharedData) -> bool {
-    matches!(account.data().len(), VOTER_ACCOUNT_LEN)
+pub fn is_voter_account(data: &[u8]) -> bool {
+    data.len() == VOTER_ACCOUNT_LEN
 }
 
 pub struct ProcessorVeMnde {
@@ -176,24 +176,17 @@ pub fn vemnde_row(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use solana_sdk::account::Account;
 
-    fn account_of(data_len: usize) -> AccountSharedData {
-        AccountSharedData::from(Account {
-            lamports: 1,
-            data: vec![0u8; data_len],
-            owner: marinade_vsr_program_id().unwrap(),
-            executable: false,
-            rent_epoch: 0,
-        })
+    fn data_of(data_len: usize) -> Vec<u8> {
+        vec![0u8; data_len]
     }
 
     #[test]
     fn voter_accounts_are_recognised_by_size_alone() {
-        assert!(is_voter_account(&account_of(VOTER_ACCOUNT_LEN)));
-        assert!(!is_voter_account(&account_of(VOTER_ACCOUNT_LEN - 1)));
-        assert!(!is_voter_account(&account_of(VOTER_ACCOUNT_LEN + 1)));
-        assert!(!is_voter_account(&account_of(0)));
+        assert!(is_voter_account(&data_of(VOTER_ACCOUNT_LEN)));
+        assert!(!is_voter_account(&data_of(VOTER_ACCOUNT_LEN - 1)));
+        assert!(!is_voter_account(&data_of(VOTER_ACCOUNT_LEN + 1)));
+        assert!(!is_voter_account(&data_of(0)));
     }
 
     fn zeroed_registrar() -> Registrar {

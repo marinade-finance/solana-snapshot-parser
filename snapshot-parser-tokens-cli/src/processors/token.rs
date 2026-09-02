@@ -24,9 +24,9 @@ pub fn spl_token_program_id() -> Pubkey {
     Pubkey::from(spl_token::ID.to_bytes())
 }
 
-pub fn is_token_account_of_mints(mints: &[Pubkey], account: &AccountSharedData) -> bool {
-    match account.data().len() {
-        spl_token::state::Account::LEN => match spl_token::state::Account::unpack(account.data()) {
+pub fn is_token_account_of_mints(mints: &[Pubkey], data: &[u8]) -> bool {
+    match data.len() {
+        spl_token::state::Account::LEN => match spl_token::state::Account::unpack(data) {
             Ok(token) => mints.contains(&token.mint),
             Err(ProgramError::UninitializedAccount) => false,
             Err(e) => {
@@ -180,7 +180,7 @@ mod tests {
         let wanted = Pubkey::new_unique();
         let other = Pubkey::new_unique();
         let mints = [wanted];
-        let keep = |data: Vec<u8>| is_token_account_of_mints(&mints, &account_of(data));
+        let keep = |data: Vec<u8>| is_token_account_of_mints(&mints, &data);
 
         assert!(keep(token_account_data(
             &wanted,
@@ -199,7 +199,7 @@ mod tests {
     #[test]
     fn accounts_that_do_not_unpack_are_dropped_silently() {
         let mints = [Pubkey::new_unique()];
-        let keep = |data: Vec<u8>| is_token_account_of_mints(&mints, &account_of(data));
+        let keep = |data: Vec<u8>| is_token_account_of_mints(&mints, &data);
 
         assert!(!keep(vec![0u8; spl_token::state::Account::LEN]));
         assert!(!keep(vec![0u8; spl_token::state::Mint::LEN]));

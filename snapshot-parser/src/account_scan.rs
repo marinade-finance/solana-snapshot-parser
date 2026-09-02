@@ -7,12 +7,17 @@ use {
     solana_sdk::account::{AccountSharedData, ReadableAccount},
     std::{
         collections::{HashMap, HashSet},
-        sync::Arc,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
         time::Instant,
     },
 };
 
-pub type AccountPredicate<'a> = Box<dyn Fn(&Pubkey, &AccountSharedData) -> bool + Send + Sync + 'a>;
+pub type AccountPredicate<'a> = Box<dyn Fn(&Pubkey, &[u8]) -> bool + Send + Sync + 'a>;
+
+const SWEEP_PROGRESS_EVERY: usize = 50_000;
 
 pub struct OwnerFilter<'a> {
     owner: Pubkey,
@@ -29,7 +34,7 @@ impl<'a> OwnerFilter<'a> {
 
     pub fn matching(
         owner: Pubkey,
-        predicate: impl Fn(&Pubkey, &AccountSharedData) -> bool + Send + Sync + 'a,
+        predicate: impl Fn(&Pubkey, &[u8]) -> bool + Send + Sync + 'a,
     ) -> Self {
         Self {
             owner,
@@ -88,17 +93,40 @@ pub fn scan_accounts_by_owner_filtered(
 
     let sweep_started = Instant::now();
     let storages = bank.get_snapshot_storages(None);
+    let swept = AtomicUsize::new(0);
     let candidates: HashSet<Pubkey> = storages
         .par_iter()
         .try_fold(HashSet::<Pubkey>::new, |mut candidates, storage| {
-            storage
-                .accounts
-                .scan_accounts_without_data(|_offset, account| {
-                    // a live account is loadable, so a zero-lamport version is never the one kept
-                    if account.lamports != 0 && wanted.contains_key(account.owner) {
-                        candidates.insert(*account.pubkey);
-                    }
-                })?;
+            let accounts = &storage.accounts;
+            accounts.scan_accounts_without_data(|offset, account| {
+                // a live account is loadable, so a zero-lamport version is never the one kept
+                if account.lamports == 0 {
+                    return;
+                }
+                let Some(predicate) = wanted.get(account.owner) else {
+                    return;
+                };
+                // the predicate runs against every stored version, so the live one is always
+                // among those judged and a survivor is never missed. Deferring it to the confirm
+                // below would instead cost an index lookup and a random read per account, and an
+                // owner such as the token program brings hundreds of millions of them.
+                let keep = match predicate {
+                    None => true,
+                    Some(predicate) => accounts
+                        .get_stored_account_callback(offset, |stored| {
+                            predicate(stored.pubkey, stored.data)
+                        })
+                        // a record the sweep cannot re-read is left for the confirm to judge
+                        .unwrap_or(true),
+                };
+                if keep {
+                    candidates.insert(*account.pubkey);
+                }
+            })?;
+            let done = swept.fetch_add(1, Ordering::Relaxed) + 1;
+            if done.is_multiple_of(SWEEP_PROGRESS_EVERY) {
+                info!("Storage sweep: {done}/{} storages", storages.len());
+            }
             anyhow::Ok(candidates)
         })
         .try_reduce(HashSet::new, |mut merged, mut other| {
@@ -134,7 +162,7 @@ pub fn scan_accounts_by_owner_filtered(
             // load() already drops zero-lamport accounts, so only the owner is left to check
             let predicate = wanted.get(account.owner()).copied()?;
             predicate
-                .is_none_or(|keep| keep(pubkey, &account))
+                .is_none_or(|keep| keep(pubkey, account.data()))
                 .then_some((*pubkey, account))
         })
         .collect();
@@ -235,18 +263,22 @@ mod tests {
     fn assert_matches_get_filtered_program_accounts(
         bank: &Arc<Bank>,
         owner: &Pubkey,
-        keep: impl Fn(&AccountSharedData) -> bool + Send + Sync + Copy,
+        keep: impl Fn(&[u8]) -> bool + Send + Sync + Copy,
     ) {
         let scanned = scan_accounts_by_owner_filtered(
             bank,
-            &[OwnerFilter::matching(*owner, move |_pubkey, account| {
-                keep(account)
+            &[OwnerFilter::matching(*owner, move |_pubkey, data| {
+                keep(data)
             })],
         )
         .unwrap();
         assert_eq!(
             pubkeys(&scanned[owner]),
-            pubkeys(&bank.get_filtered_program_accounts(owner, keep).unwrap()),
+            pubkeys(
+                &bank
+                    .get_filtered_program_accounts(owner, |account| keep(account.data()))
+                    .unwrap()
+            ),
             "filtered scan diverged from get_filtered_program_accounts for owner {owner}"
         );
         assert!(
@@ -415,7 +447,7 @@ mod tests {
         let scanned = scan_accounts_by_owner_filtered(
             &bank,
             &[
-                OwnerFilter::matching(filtered_owner, |_pubkey, account| account.data() == [7; 4]),
+                OwnerFilter::matching(filtered_owner, |_pubkey, data| data == [7; 4]),
                 OwnerFilter::all(unfiltered_owner),
             ],
         )
@@ -426,6 +458,40 @@ mod tests {
             .iter()
             .any(|(pubkey, _)| *pubkey == dropped));
         assert_eq!(pubkeys(&scanned[&unfiltered_owner]), pubkeys_of(&untouched));
+    }
+
+    #[test]
+    fn a_predicate_judges_every_stored_version_so_the_live_one_decides() {
+        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(1_000_000);
+        let (parent, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+
+        let owner = Pubkey::new_unique();
+        let promoted = Pubkey::new_unique();
+        let demoted = Pubkey::new_unique();
+        parent.store_account(&promoted, &account(&owner, 10, vec![0; 4]));
+        parent.store_account(&demoted, &account(&owner, 20, vec![7; 4]));
+        persist(&parent);
+
+        let bank =
+            Bank::new_from_parent_with_bank_forks(&bank_forks, parent, Default::default(), 1);
+        bank.store_account(&promoted, &account(&owner, 10, vec![7; 4]));
+        bank.store_account(&demoted, &account(&owner, 20, vec![0; 4]));
+        persist(&bank);
+
+        let scanned = scan_accounts_by_owner_filtered(
+            &bank,
+            &[OwnerFilter::matching(owner, |_pubkey, data| data == [7; 4])],
+        )
+        .unwrap();
+
+        assert_eq!(
+            pubkeys(&scanned[&owner]),
+            pubkeys_of(&[promoted]),
+            "an account is kept on the verdict of its live version, whatever an older stored \
+             version of it says"
+        );
+
+        assert_matches_get_filtered_program_accounts(&bank, &owner, |data| data == [7; 4]);
     }
 
     #[test]
@@ -470,9 +536,7 @@ mod tests {
         store(&bank, &owner, vec![1; 8]);
         persist(&bank);
 
-        assert_matches_get_filtered_program_accounts(&bank, &owner, |account| {
-            account.data() == [1; 8]
-        });
+        assert_matches_get_filtered_program_accounts(&bank, &owner, |data| data == [1; 8]);
         assert_matches_get_filtered_program_accounts(&bank, &owner, |_| true);
         assert_matches_get_filtered_program_accounts(&bank, &owner, |_| false);
     }
