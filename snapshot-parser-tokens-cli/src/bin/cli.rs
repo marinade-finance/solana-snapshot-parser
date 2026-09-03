@@ -94,8 +94,7 @@ async fn main() -> anyhow::Result<()> {
         bank.unix_timestamp_from_genesis()
     );
 
-    // only the loader knows which archives agave actually combined, so callers that need the
-    // slot of the parsed state read it from here instead of guessing it from a file name
+    // agave picks which archives to combine, so the loaded slot is not derivable from a file name
     if let Some(output_slot) = &args.output_slot {
         std::fs::write(output_slot, format!("{}\n", bank.slot()))
             .map_err(|e| anyhow::anyhow!("Failed to write bank slot to {output_slot}: {e}"))?;

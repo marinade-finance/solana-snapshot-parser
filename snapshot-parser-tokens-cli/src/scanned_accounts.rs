@@ -105,9 +105,6 @@ fn mint_supplies(bank: &Arc<Bank>, filters: &Filters) -> anyhow::Result<Vec<(Pub
         .collect()
 }
 
-// Every unit of an SPL mint sits in exactly one token account, so the balances of the scanned
-// accounts have to add up to the mint's own supply. A scan that missed accounts still looks
-// plausible on its own; measured against the supply it does not.
 fn verify_token_supply(
     mint_supplies: &[(Pubkey, u64)],
     token_accounts: &[(Pubkey, AccountSharedData)],

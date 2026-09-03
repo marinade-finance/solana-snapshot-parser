@@ -36,19 +36,21 @@ impl Filters {
     }
 
     fn split_pubkeys(pubkeys_string: &str, name: &str) -> anyhow::Result<Vec<Pubkey>> {
-        pubkeys_string
-            .split(',')
-            .map(|s| {
-                Pubkey::from_str(s).map_err(|e| {
-                    anyhow::anyhow!(
-                        "Could not parse pubkey from '{}' of name {}: {}",
-                        s,
-                        name,
-                        e
-                    )
-                })
-            })
-            .collect()
+        let mut pubkeys: Vec<Pubkey> = Vec::new();
+        for s in pubkeys_string.split(',') {
+            let pubkey = Pubkey::from_str(s).map_err(|e| {
+                anyhow::anyhow!(
+                    "Could not parse pubkey from '{}' of name {}: {}",
+                    s,
+                    name,
+                    e
+                )
+            })?;
+            if !pubkeys.contains(&pubkey) {
+                pubkeys.push(pubkey);
+            }
+        }
+        Ok(pubkeys)
     }
 }
 
@@ -137,6 +139,26 @@ mod tests {
             "multi-mints",
             &format!(
                 r#"{{"account_mints":"{MSOL_MINT},{SYSTEM_PROGRAM}","vsr_registrar_data":"AQID"}}"#
+            ),
+        );
+
+        let filters = Filters::load(&file.0).unwrap();
+
+        assert_eq!(
+            filters.account_mints,
+            vec![
+                Pubkey::from_str(MSOL_MINT).unwrap(),
+                Pubkey::from_str(SYSTEM_PROGRAM).unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_repeated_account_mint_is_kept_once() {
+        let file = TempJson::new(
+            "duplicate-mints",
+            &format!(
+                r#"{{"account_mints":"{MSOL_MINT},{SYSTEM_PROGRAM},{MSOL_MINT}","vsr_registrar_data":"AQID"}}"#
             ),
         );
 

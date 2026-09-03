@@ -77,7 +77,6 @@ impl DbWriter {
             )
         })?;
 
-        // the run is already doomed once a row is lost, so stop here instead of at finalize
         anyhow::ensure!(
             outcome.rows_failed == 0,
             "SQLite rejected {} of {} rows of `{}`",

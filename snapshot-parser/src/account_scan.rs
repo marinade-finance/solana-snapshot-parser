@@ -7,17 +7,12 @@ use {
     solana_sdk::account::{AccountSharedData, ReadableAccount},
     std::{
         collections::{HashMap, HashSet},
-        sync::{
-            atomic::{AtomicUsize, Ordering},
-            Arc,
-        },
+        sync::Arc,
         time::Instant,
     },
 };
 
 pub type AccountPredicate<'a> = Box<dyn Fn(&Pubkey, &[u8]) -> bool + Send + Sync + 'a>;
-
-const SWEEP_PROGRESS_EVERY: usize = 50_000;
 
 pub struct OwnerFilter<'a> {
     owner: Pubkey,
@@ -43,15 +38,6 @@ impl<'a> OwnerFilter<'a> {
     }
 }
 
-// Finds all accounts owned by the given programs in one pass over the storage files.
-// Doing this with get_program_accounts instead would rescan the whole accounts index
-// once per owner.
-//
-// Only use this on a bank loaded straight from a snapshot: there, every live account
-// is guaranteed to be in a storage file. On a bank that has processed transactions
-// since, recent writes may still sit in the write cache where this scan cannot see
-// them (the flush below covers rooted slots only), so the scan errors out rather than
-// under-report.
 pub fn scan_accounts_by_owner(
     bank: &Arc<Bank>,
     owners: &[Pubkey],
@@ -79,10 +65,7 @@ pub fn scan_accounts_by_owner_filtered(
          arbitrary, so pass exactly one filter per owner"
     );
 
-    // accounts still in the write cache have no storage for the sweep to find
     bank.force_flush_accounts_cache();
-    // the flush covers rooted slots only, and empties the cache of every slot it flushed.
-    // anything left is an unrooted write this scan would silently miss, so refuse to run.
     let unflushed_slots = bank.rc.accounts.accounts_db.accounts_cache.num_slots();
     anyhow::ensure!(
         unflushed_slots == 0,
@@ -93,7 +76,6 @@ pub fn scan_accounts_by_owner_filtered(
 
     let sweep_started = Instant::now();
     let storages = bank.get_snapshot_storages(None);
-    let swept = AtomicUsize::new(0);
     let candidates: HashSet<Pubkey> = storages
         .par_iter()
         .try_fold(HashSet::<Pubkey>::new, |mut candidates, storage| {
@@ -106,27 +88,19 @@ pub fn scan_accounts_by_owner_filtered(
                 let Some(predicate) = wanted.get(account.owner) else {
                     return;
                 };
-                // the predicate runs against every stored version, so the live one is always
-                // among those judged and a survivor is never missed. Deferring it to the confirm
-                // below would instead cost an index lookup and a random read per account, and an
-                // owner such as the token program brings hundreds of millions of them.
+                // judging every stored version keeps the live one among them, so none is missed
                 let keep = match predicate {
                     None => true,
                     Some(predicate) => accounts
                         .get_stored_account_callback(offset, |stored| {
                             predicate(stored.pubkey, stored.data)
                         })
-                        // a record the sweep cannot re-read is left for the confirm to judge
                         .unwrap_or(true),
                 };
                 if keep {
                     candidates.insert(*account.pubkey);
                 }
             })?;
-            let done = swept.fetch_add(1, Ordering::Relaxed) + 1;
-            if done.is_multiple_of(SWEEP_PROGRESS_EVERY) {
-                info!("Storage sweep: {done}/{} storages", storages.len());
-            }
             anyhow::Ok(candidates)
         })
         .try_reduce(HashSet::new, |mut merged, mut other| {
@@ -189,8 +163,6 @@ pub fn scan_accounts_by_owner_filtered(
     Ok(collected)
 }
 
-// The caller supplies `expected` from the accounts index, which is the thing the single pass
-// exists to avoid: this is a deliberate second scan, only worth paying on demand.
 pub fn verify_scan_matches(
     owner: &Pubkey,
     scanned: &[(Pubkey, AccountSharedData)],
@@ -211,6 +183,26 @@ pub fn verify_scan_matches(
         scanned_pubkeys.difference(&expected_pubkeys).count(),
         expected_pubkeys.difference(&scanned_pubkeys).count()
     );
+
+    let mut scanned_sorted: Vec<&(Pubkey, AccountSharedData)> = scanned.iter().collect();
+    let mut expected_sorted: Vec<&(Pubkey, AccountSharedData)> = expected.iter().collect();
+    scanned_sorted.sort_unstable_by_key(|(pubkey, _)| *pubkey);
+    expected_sorted.sort_unstable_by_key(|(pubkey, _)| *pubkey);
+    for ((pubkey, account), (_, expected_account)) in
+        scanned_sorted.into_iter().zip(expected_sorted)
+    {
+        anyhow::ensure!(
+            account == expected_account,
+            "Account scan content mismatch for {pubkey} of owner {owner}, single pass versus the \
+             index scan: lamports {} vs {}, data bytes {} vs {}, owner {} vs {}",
+            account.lamports(),
+            expected_account.lamports(),
+            account.data().len(),
+            expected_account.data().len(),
+            account.owner(),
+            expected_account.owner()
+        );
+    }
 
     info!(
         "Account scan verified against the index scan for owner {}: {} accounts",
@@ -272,15 +264,15 @@ mod tests {
             })],
         )
         .unwrap();
+        let expected = bank
+            .get_filtered_program_accounts(owner, |account| keep(account.data()))
+            .unwrap();
         assert_eq!(
             pubkeys(&scanned[owner]),
-            pubkeys(
-                &bank
-                    .get_filtered_program_accounts(owner, |account| keep(account.data()))
-                    .unwrap()
-            ),
+            pubkeys(&expected),
             "filtered scan diverged from get_filtered_program_accounts for owner {owner}"
         );
+        verify_scan_matches(owner, &scanned[owner], &expected).unwrap();
         assert!(
             scanned[owner].is_sorted_by_key(|(pubkey, _)| *pubkey),
             "filtered scan result for owner {owner} is not in a reproducible order"
@@ -290,11 +282,13 @@ mod tests {
     fn assert_matches_get_program_accounts(bank: &Arc<Bank>, owners: &[Pubkey]) {
         let scanned = scan_accounts_by_owner(bank, owners).unwrap();
         for owner in owners {
+            let expected = bank.get_program_accounts(owner).unwrap();
             assert_eq!(
                 pubkeys(&scanned[owner]),
-                pubkeys(&bank.get_program_accounts(owner).unwrap()),
+                pubkeys(&expected),
                 "scan diverged from get_program_accounts for owner {owner}"
             );
+            verify_scan_matches(owner, &scanned[owner], &expected).unwrap();
             assert!(
                 scanned[owner].is_sorted_by_key(|(pubkey, _)| *pubkey),
                 "scan result for owner {owner} is not in a reproducible order"
@@ -339,8 +333,7 @@ mod tests {
         parent.store_account(&persisted, &account(&wanted_owners[0], 10, vec![0; 4]));
         persist(&parent);
 
-        // slot 1 is never squashed, so this write stays in the write cache: the rooted-only
-        // flush inside the scan cannot move it to a storage
+        // slot 1 is never squashed, so this write stays in the write cache
         let bank =
             Bank::new_from_parent_with_bank_forks(&bank_forks, parent, Default::default(), 1);
         let unrooted = Pubkey::new_unique();
@@ -604,5 +597,31 @@ mod tests {
             err.to_string().contains("pubkey set mismatch"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn a_scan_of_the_right_pubkeys_carrying_stale_contents_does_not_verify() {
+        let owner = Pubkey::new_unique();
+        let pubkey = Pubkey::new_unique();
+        let live = (pubkey, account(&owner, 11, vec![9; 4]));
+        let stale_lamports = (pubkey, account(&owner, 10, vec![9; 4]));
+        let stale_data = (pubkey, account(&owner, 11, vec![0; 4]));
+        let reowned = (pubkey, account(&Pubkey::new_unique(), 11, vec![9; 4]));
+
+        let live_one = std::slice::from_ref(&live);
+        verify_scan_matches(&owner, live_one, live_one).unwrap();
+
+        for (stale, what) in [
+            (&stale_lamports, "lamport balance"),
+            (&stale_data, "account data"),
+            (&reowned, "owner"),
+        ] {
+            let err = verify_scan_matches(&owner, std::slice::from_ref(stale), live_one)
+                .expect_err(&format!("a scan carrying a stale {what} must not verify"));
+            assert!(
+                err.to_string().contains("content mismatch"),
+                "unexpected error for a stale {what}: {err}"
+            );
+        }
     }
 }

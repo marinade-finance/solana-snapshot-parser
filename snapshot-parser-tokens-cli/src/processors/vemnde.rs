@@ -123,8 +123,6 @@ impl ProcessorVeMnde {
             }
         }
 
-        // a few skips are accounts planted under the VSR program; many mean the registrar file
-        // or the Voter layout no longer matches the chain
         if skipped > 0 {
             error!(
                 "VeMnde processor skipped {} of {} scanned voter accounts, so the DB carries no \
@@ -166,7 +164,6 @@ pub fn vemnde_row(
         .iter()
         .filter(|d| d.is_used)
         .try_fold(0u64, |sum, d| {
-            // account data is untrusted: anyone can assign a 2728 byte account to the VSR program
             let voting_mint = registrar
                 .voting_mints
                 .get(d.voting_mint_config_idx as usize)
