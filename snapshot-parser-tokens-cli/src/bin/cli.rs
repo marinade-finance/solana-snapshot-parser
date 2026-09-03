@@ -61,12 +61,23 @@ struct Args {
     verify_account_scan: bool,
 }
 
+impl Args {
+    fn validate(&self) -> anyhow::Result<()> {
+        if self.output_slot.as_deref() == Some(self.output_sqlite.as_str()) {
+            anyhow::bail!("--output-slot and --output-sqlite need different paths, promoting the DB renames it over the slot file and leaves neither output readable");
+        }
+
+        Ok(())
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut builder = Builder::from_env(Env::default().default_filter_or("info"));
     builder.filter_module("solana_metrics::metrics", LevelFilter::Error);
     builder.init();
     let args: Args = Args::parse();
+    args.validate()?;
 
     let now = SystemTime::now();
     let since_the_epoch = now.duration_since(UNIX_EPOCH)?;
@@ -214,4 +225,43 @@ async fn define_counter(
     let progress_counter = Arc::new(ProgressCounter::new(multi_progress, name));
     stats.add_callback(progress_counter.clone()).await;
     progress_counter
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn args_of(output_slot: Option<&str>) -> Args {
+        let mut argv = vec![
+            "snapshot-parser-tokens-cli",
+            "--ledger-path",
+            ".",
+            "--output-sqlite",
+            "./snapshot.db",
+            "--filters",
+            ".",
+        ];
+        if let Some(output_slot) = output_slot {
+            argv.extend(["--output-slot", output_slot]);
+        }
+        Args::try_parse_from(argv).expect("argv parses, the combination is rejected by validation")
+    }
+
+    #[test]
+    fn one_path_for_the_slot_and_the_db_is_rejected() {
+        let err = args_of(Some("./snapshot.db"))
+            .validate()
+            .expect_err("promoting the DB over the slot file must not be a silent overwrite");
+        assert!(
+            err.to_string().contains("--output-slot"),
+            "the error must name the colliding flag: {err}"
+        );
+    }
+
+    #[test]
+    fn distinct_output_paths_are_allowed() {
+        args_of(Some("./slot.txt")).validate().unwrap();
+        args_of(None).validate().unwrap();
+    }
 }
