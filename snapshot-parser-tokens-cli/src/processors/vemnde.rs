@@ -98,6 +98,7 @@ impl ProcessorVeMnde {
             "VeMMNDE processor got {} Voter accounts from the scan",
             self.voter_accounts.len()
         );
+        let mut skipped = 0usize;
         for (pubkey, account) in self.voter_accounts.iter() {
             if let Ok(voter_account) = Voter::deserialize(&mut account.data()) {
                 match vemnde_row(
@@ -108,14 +109,29 @@ impl ProcessorVeMnde {
                     self.current_ts,
                 ) {
                     Ok(row) => self.db_writer.push(row).await?,
-                    Err(e) => error!(
-                        "Error: skipping voter account {} whose voting power does not add up: {:?}",
-                        pubkey, e
-                    ),
+                    Err(e) => {
+                        skipped += 1;
+                        error!(
+                            "Error: skipping voter account {} whose voting power does not add up: {:?}",
+                            pubkey, e
+                        );
+                    }
                 }
             } else {
+                skipped += 1;
                 warn!("Error: failed to unpack voter account: {:?}", pubkey);
             }
+        }
+
+        // a few skips are accounts planted under the VSR program; many mean the registrar file
+        // or the Voter layout no longer matches the chain
+        if skipped > 0 {
+            error!(
+                "VeMnde processor skipped {} of {} scanned voter accounts, so the DB carries no \
+                 voting power for them",
+                skipped,
+                self.voter_accounts.len()
+            );
         }
 
         self.db_writer.flush().await
