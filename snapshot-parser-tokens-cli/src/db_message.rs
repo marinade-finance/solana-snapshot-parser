@@ -1,16 +1,27 @@
 use rusqlite::ToSql;
 use tokio::sync::oneshot;
 
+pub type OwnedSqlParams = Vec<Box<dyn ToSql + Send + Sync>>;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct BatchOutcome {
+    pub rows_failed: usize,
+}
+
 pub enum DbMessage {
     Execute {
         query: String,
-        params: Vec<Box<dyn ToSql + Send + Sync>>,
-        response: oneshot::Sender<anyhow::Result<usize>>,
+        rows: Vec<OwnedSqlParams>,
+        response: oneshot::Sender<BatchOutcome>,
     },
     ExecuteSpecial {
         query: String,
-        params: Vec<Box<dyn ToSql + Send + Sync>>,
+        params: OwnedSqlParams,
         response: oneshot::Sender<anyhow::Result<usize>>,
+    },
+    RowsLost {
+        query: String,
+        count: usize,
     },
     Shutdown {
         response: oneshot::Sender<anyhow::Result<()>>,

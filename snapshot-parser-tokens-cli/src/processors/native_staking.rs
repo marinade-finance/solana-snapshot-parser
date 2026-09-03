@@ -1,15 +1,17 @@
-use crate::db_message::{DbMessage, OwnedSqlValue};
+use crate::db_message::{DbMessage, OwnedSqlParams, OwnedSqlValue};
+use crate::db_writer::DbWriter;
 use crate::processors::Processor;
 use crate::progress_bar::ProgressCounter;
 use crate::sql_params;
 use crate::stats::ProcessorCallback;
 use anyhow::anyhow;
 use async_trait::async_trait;
-use log::{debug, error};
+use log::debug;
 use rusqlite::ToSql;
-use snapshot_parser::stake_meta::generate_stake_meta_collection;
+use snapshot_parser::stake_meta::generate_stake_meta_collection_for_accounts;
 use solana_program::pubkey::Pubkey;
 use solana_runtime::bank::Bank;
+use solana_sdk::account::AccountSharedData;
 use std::future::Future;
 use std::str::FromStr;
 use std::string::ToString;
@@ -23,7 +25,9 @@ const MARINADE_NATIVE_STAKE_AUTHORITY_ADDR: &str = "stWirqFCf2Uts1JBL1Jsd3r6VBWh
 
 pub struct ProcessorNativeStake {
     bank: Arc<Bank>,
+    stake_accounts: Arc<Vec<(Pubkey, AccountSharedData)>>,
     db_sender: Sender<DbMessage>,
+    db_writer: DbWriter,
     native_stake_counter: Arc<ProgressCounter>,
     native_stake_authority: Pubkey,
 }
@@ -31,6 +35,7 @@ pub struct ProcessorNativeStake {
 impl ProcessorNativeStake {
     pub async fn new(
         bank: Arc<Bank>,
+        stake_accounts: Arc<Vec<(Pubkey, AccountSharedData)>>,
         db_sender: Sender<DbMessage>,
         native_stake_counter: Arc<ProgressCounter>,
     ) -> anyhow::Result<Self> {
@@ -44,6 +49,12 @@ impl ProcessorNativeStake {
             })?;
         let processor = Self {
             bank,
+            stake_accounts,
+            db_writer: DbWriter::new(
+                db_sender.clone(),
+                INSERT_NATIVE_STAKE_ACCOUNT_QUERY,
+                native_stake_counter.clone(),
+            ),
             db_sender,
             native_stake_counter,
             native_stake_authority,
@@ -71,31 +82,25 @@ impl ProcessorNativeStake {
 
     pub async fn process(&mut self) -> anyhow::Result<()> {
         debug!(
-            "Loading staking accounts for native staking authority {} from bank...",
-            self.native_stake_authority
+            "Building stake metas for native staking authority {} from {} scanned accounts...",
+            self.native_stake_authority,
+            self.stake_accounts.len()
         );
-        let stake_accounts = generate_stake_meta_collection(&self.bank)?;
+        let stake_accounts =
+            generate_stake_meta_collection_for_accounts(&self.bank, &self.stake_accounts)?;
 
         for stake_meta in stake_accounts.stake_metas.iter() {
             if stake_meta.stake_authority == self.native_stake_authority {
-                insert_native_staking(
-                    &self.db_sender,
-                    &self.native_stake_counter,
-                    &stake_meta.pubkey,
-                    &stake_meta.withdraw_authority,
-                    stake_meta.active_delegation_lamports,
-                )
-                .await
-                .unwrap_or_else(|e| {
-                    error!(
-                        "Failed to insert native stake {}: {:?}",
-                        stake_meta.pubkey, e
-                    );
-                    0
-                });
+                self.db_writer
+                    .push(native_stake_row(
+                        &stake_meta.pubkey,
+                        &stake_meta.withdraw_authority,
+                        stake_meta.active_delegation_lamports,
+                    ))
+                    .await?;
             }
         }
-        Ok(())
+        self.db_writer.flush().await
     }
 }
 
@@ -118,26 +123,14 @@ impl ProcessorCallback for ProcessorNativeStake {
     }
 }
 
-pub async fn insert_native_staking(
-    db_sender: &Sender<DbMessage>,
-    progress_counter: &Arc<ProgressCounter>,
+pub fn native_stake_row(
     pubkey: &Pubkey,
     authorized_withdrawer: &Pubkey,
     delegated_stake: u64,
-) -> anyhow::Result<usize> {
-    let (response_tx, response_rx) = oneshot::channel();
-    let owned_params = sql_params![
+) -> OwnedSqlParams {
+    sql_params![
         pubkey.to_string(),
         authorized_withdrawer.to_string(),
         delegated_stake.to_string(),
-    ];
-    db_sender
-        .send(DbMessage::Execute {
-            query: INSERT_NATIVE_STAKE_ACCOUNT_QUERY.to_string(),
-            params: owned_params,
-            response: response_tx,
-        })
-        .await?;
-    progress_counter.inc();
-    response_rx.await?
+    ]
 }
