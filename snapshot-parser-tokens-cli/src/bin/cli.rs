@@ -1,3 +1,4 @@
+use anyhow::Context;
 use clap::Parser;
 use env_logger::{Builder, Env};
 use indicatif::MultiProgress;
@@ -5,6 +6,7 @@ use log::LevelFilter;
 use log::{debug, info};
 use snapshot_parser::bank_loader::create_bank_from_ledger;
 use snapshot_parser::cli::path_parser;
+use snapshot_parser_tokens_cli::db_connection::temp_db_path;
 use snapshot_parser_tokens_cli::db_message::DbMessage;
 use snapshot_parser_tokens_cli::filters::Filters;
 use snapshot_parser_tokens_cli::processors::{
@@ -15,7 +17,7 @@ use snapshot_parser_tokens_cli::processors::{
 use snapshot_parser_tokens_cli::progress_bar::ProgressCounter;
 use snapshot_parser_tokens_cli::scanned_accounts::scan_required_accounts;
 use snapshot_parser_tokens_cli::stats::Stats;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::{self};
@@ -61,12 +63,64 @@ struct Args {
     verify_account_scan: bool,
 }
 
+// `..` and symlinks survive lexical absolutisation, so two spellings of one file would compare unequal.
+fn resolve_output(path: &str) -> anyhow::Result<PathBuf> {
+    resolve_links(&std::path::absolute(path)?, 8)
+}
+
+fn resolve_links(path: &Path, hops: u8) -> anyhow::Result<PathBuf> {
+    let (Some(parent), Some(file_name)) = (path.parent(), path.file_name()) else {
+        anyhow::bail!("{} is not a path to a file", path.display());
+    };
+    // only the parent is canonicalised, so an output that does not exist yet still resolves.
+    let parent = std::fs::canonicalize(parent)
+        .with_context(|| format!("cannot resolve the directory of {}", path.display()))?;
+    let resolved = parent.join(file_name);
+
+    let Ok(target) = std::fs::read_link(&resolved) else {
+        return Ok(resolved);
+    };
+    if hops == 0 {
+        anyhow::bail!(
+            "{} resolves through too many symbolic links",
+            path.display()
+        );
+    }
+    resolve_links(&parent.join(target), hops - 1)
+}
+
+impl Args {
+    fn validate(&self) -> anyhow::Result<PathBuf> {
+        let output_sqlite = resolve_output(&self.output_sqlite)?;
+        let Some(output_slot) = self.output_slot.as_deref() else {
+            return Ok(output_sqlite);
+        };
+        let output_slot = resolve_output(output_slot)?;
+
+        if output_slot == output_sqlite {
+            anyhow::bail!(
+                "--output-slot and --output-sqlite both resolve to {}, promoting the DB renames it over the slot file and the slot value is lost",
+                output_sqlite.display()
+            );
+        }
+        if output_slot == temp_db_path(&output_sqlite) {
+            anyhow::bail!(
+                "--output-slot resolves to {}, the temporary file of --output-sqlite, which the DB run deletes before writing it",
+                output_slot.display()
+            );
+        }
+
+        Ok(output_sqlite)
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut builder = Builder::from_env(Env::default().default_filter_or("info"));
     builder.filter_module("solana_metrics::metrics", LevelFilter::Error);
     builder.init();
     let args: Args = Args::parse();
+    let output_sqlite = args.validate()?;
 
     let now = SystemTime::now();
     let since_the_epoch = now.duration_since(UNIX_EPOCH)?;
@@ -125,7 +179,7 @@ async fn main() -> anyhow::Result<()> {
                 .send(())
                 .expect("Failed to send ready signal");
             let db = snapshot_parser_tokens_cli::db_connection::SQLiteExecutor::new(
-                PathBuf::from(&args.output_sqlite),
+                output_sqlite,
                 args.sqlite_cache_size,
                 args.sqlite_mmap_size,
                 args.sqlite_tx_bulk,
@@ -214,4 +268,67 @@ async fn define_counter(
     let progress_counter = Arc::new(ProgressCounter::new(multi_progress, name));
     stats.add_callback(progress_counter.clone()).await;
     progress_counter
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Built directly: clap would read the `env` fallbacks and an ambient OUTPUT_SLOT
+    // would silently replace the no-slot case.
+    fn args_of(output_sqlite: &str, output_slot: Option<&str>) -> Args {
+        Args {
+            ledger_path: PathBuf::from("."),
+            output_sqlite: output_sqlite.to_owned(),
+            output_slot: output_slot.map(str::to_owned),
+            filters: PathBuf::from("."),
+            channel_size: None,
+            sqlite_cache_size: None,
+            sqlite_mmap_size: None,
+            sqlite_tx_bulk: None,
+            verify_account_scan: false,
+        }
+    }
+
+    #[test]
+    fn one_path_for_the_slot_and_the_db_is_rejected() {
+        let err = args_of("./snapshot.db", Some("./snapshot.db"))
+            .validate()
+            .expect_err("promoting the DB over the slot file must not be a silent overwrite");
+        assert!(
+            err.to_string().contains("--output-slot"),
+            "the error must name the colliding flag: {err}"
+        );
+    }
+
+    #[test]
+    fn another_spelling_of_the_db_path_is_rejected_for_the_slot() {
+        args_of("./snapshot.db", Some("snapshot.db"))
+            .validate()
+            .expect_err("a relative alias of the DB path is the same file");
+
+        let absolute = std::path::absolute("./snapshot.db").unwrap();
+        args_of("./snapshot.db", Some(absolute.to_str().unwrap()))
+            .validate()
+            .expect_err("an absolute alias of the DB path is the same file");
+
+        args_of("./snapshot.db", Some("./src/../snapshot.db"))
+            .validate()
+            .expect_err("a parent-component alias of the DB path is the same file");
+    }
+
+    #[test]
+    fn the_temporary_file_of_the_db_is_rejected_for_the_slot() {
+        args_of("./snapshot.db", Some("./_snapshot.db.tmp"))
+            .validate()
+            .expect_err("the DB run unlinks its temporary file before writing it");
+    }
+
+    #[test]
+    fn distinct_output_paths_are_allowed() {
+        args_of("./snapshot.db", Some("./slot.txt"))
+            .validate()
+            .unwrap();
+        args_of("./snapshot.db", None).validate().unwrap();
+    }
 }
