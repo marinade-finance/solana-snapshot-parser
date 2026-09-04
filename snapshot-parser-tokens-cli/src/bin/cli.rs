@@ -71,8 +71,13 @@ fn resolve_output(path: &str) -> anyhow::Result<PathBuf> {
     };
     let parent = std::fs::canonicalize(parent)
         .with_context(|| format!("cannot resolve the directory of {}", path.display()))?;
+    let resolved = parent.join(file_name);
 
-    Ok(parent.join(file_name))
+    // canonicalising the parent leaves a symlinked file name pointing elsewhere, dangling ones included.
+    Ok(match std::fs::read_link(&resolved) {
+        Ok(target) => std::path::absolute(parent.join(target))?,
+        Err(_) => resolved,
+    })
 }
 
 impl Args {
