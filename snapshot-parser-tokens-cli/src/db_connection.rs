@@ -22,6 +22,13 @@ pub struct SQLiteExecutor {
     shut_down: bool,
 }
 
+pub fn temp_db_path(db_path: &Path) -> PathBuf {
+    db_path.with_file_name(format!(
+        "_{}.tmp",
+        db_path.file_name().unwrap().to_string_lossy()
+    ))
+}
+
 impl SQLiteExecutor {
     /// This is a SQLite DB connection wrapper that provides a temporary file for the DB.
     /// This connection strictly requires exclusive locking and has got no journaling set up.
@@ -34,8 +41,7 @@ impl SQLiteExecutor {
         receiver: Receiver<DbMessage>,
     ) -> anyhow::Result<Self> {
         // Create temporary DB file, which gets promoted on success.
-        let temp_file_name = format!("_{}.tmp", db_path.file_name().unwrap().to_string_lossy());
-        let db_temp_path = db_path.with_file_name(&temp_file_name);
+        let db_temp_path = temp_db_path(&db_path);
         let _ = std::fs::remove_file(&db_temp_path);
         let db_temp_guard = TempFileGuard::new(db_temp_path.clone());
         // Create and configure the DB as file-backed

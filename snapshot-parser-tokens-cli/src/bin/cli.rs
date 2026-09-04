@@ -1,3 +1,4 @@
+use anyhow::Context;
 use clap::Parser;
 use env_logger::{Builder, Env};
 use indicatif::MultiProgress;
@@ -5,6 +6,7 @@ use log::LevelFilter;
 use log::{debug, info};
 use snapshot_parser::bank_loader::create_bank_from_ledger;
 use snapshot_parser::cli::path_parser;
+use snapshot_parser_tokens_cli::db_connection::temp_db_path;
 use snapshot_parser_tokens_cli::db_message::DbMessage;
 use snapshot_parser_tokens_cli::filters::Filters;
 use snapshot_parser_tokens_cli::processors::{
@@ -61,10 +63,37 @@ struct Args {
     verify_account_scan: bool,
 }
 
+// `..` and symlinks survive lexical absolutisation, so two spellings of one file would compare unequal.
+fn resolve_output(path: &str) -> anyhow::Result<PathBuf> {
+    let path = std::path::absolute(path)?;
+    let (Some(parent), Some(file_name)) = (path.parent(), path.file_name()) else {
+        anyhow::bail!("{} is not a path to a file", path.display());
+    };
+    let parent = std::fs::canonicalize(parent)
+        .with_context(|| format!("cannot resolve the directory of {}", path.display()))?;
+
+    Ok(parent.join(file_name))
+}
+
 impl Args {
     fn validate(&self) -> anyhow::Result<()> {
-        if self.output_slot.as_deref() == Some(self.output_sqlite.as_str()) {
-            anyhow::bail!("--output-slot and --output-sqlite need different paths, promoting the DB renames it over the slot file and leaves neither output readable");
+        let Some(output_slot) = self.output_slot.as_deref() else {
+            return Ok(());
+        };
+        let output_slot = resolve_output(output_slot)?;
+        let output_sqlite = resolve_output(&self.output_sqlite)?;
+
+        if output_slot == output_sqlite {
+            anyhow::bail!(
+                "--output-slot and --output-sqlite both resolve to {}, promoting the DB renames it over the slot file and the slot value is lost",
+                output_sqlite.display()
+            );
+        }
+        if output_slot == temp_db_path(&output_sqlite) {
+            anyhow::bail!(
+                "--output-slot resolves to {}, the temporary file of --output-sqlite, which the DB run deletes before writing it",
+                output_slot.display()
+            );
         }
 
         Ok(())
@@ -230,27 +259,26 @@ async fn define_counter(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
 
-    fn args_of(output_slot: Option<&str>) -> Args {
-        let mut argv = vec![
-            "snapshot-parser-tokens-cli",
-            "--ledger-path",
-            ".",
-            "--output-sqlite",
-            "./snapshot.db",
-            "--filters",
-            ".",
-        ];
-        if let Some(output_slot) = output_slot {
-            argv.extend(["--output-slot", output_slot]);
+    // Built directly: clap would read the `env` fallbacks and an ambient OUTPUT_SLOT
+    // would silently replace the no-slot case.
+    fn args_of(output_sqlite: &str, output_slot: Option<&str>) -> Args {
+        Args {
+            ledger_path: PathBuf::from("."),
+            output_sqlite: output_sqlite.to_owned(),
+            output_slot: output_slot.map(str::to_owned),
+            filters: PathBuf::from("."),
+            channel_size: None,
+            sqlite_cache_size: None,
+            sqlite_mmap_size: None,
+            sqlite_tx_bulk: None,
+            verify_account_scan: false,
         }
-        Args::try_parse_from(argv).expect("argv parses, the combination is rejected by validation")
     }
 
     #[test]
     fn one_path_for_the_slot_and_the_db_is_rejected() {
-        let err = args_of(Some("./snapshot.db"))
+        let err = args_of("./snapshot.db", Some("./snapshot.db"))
             .validate()
             .expect_err("promoting the DB over the slot file must not be a silent overwrite");
         assert!(
@@ -260,8 +288,33 @@ mod tests {
     }
 
     #[test]
+    fn another_spelling_of_the_db_path_is_rejected_for_the_slot() {
+        args_of("./snapshot.db", Some("snapshot.db"))
+            .validate()
+            .expect_err("a relative alias of the DB path is the same file");
+
+        let absolute = std::path::absolute("./snapshot.db").unwrap();
+        args_of("./snapshot.db", Some(absolute.to_str().unwrap()))
+            .validate()
+            .expect_err("an absolute alias of the DB path is the same file");
+
+        args_of("./snapshot.db", Some("./src/../snapshot.db"))
+            .validate()
+            .expect_err("a parent-component alias of the DB path is the same file");
+    }
+
+    #[test]
+    fn the_temporary_file_of_the_db_is_rejected_for_the_slot() {
+        args_of("./snapshot.db", Some("./_snapshot.db.tmp"))
+            .validate()
+            .expect_err("the DB run unlinks its temporary file before writing it");
+    }
+
+    #[test]
     fn distinct_output_paths_are_allowed() {
-        args_of(Some("./slot.txt")).validate().unwrap();
-        args_of(None).validate().unwrap();
+        args_of("./snapshot.db", Some("./slot.txt"))
+            .validate()
+            .unwrap();
+        args_of("./snapshot.db", None).validate().unwrap();
     }
 }
