@@ -17,7 +17,7 @@ use snapshot_parser_tokens_cli::processors::{
 use snapshot_parser_tokens_cli::progress_bar::ProgressCounter;
 use snapshot_parser_tokens_cli::scanned_accounts::scan_required_accounts;
 use snapshot_parser_tokens_cli::stats::Stats;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::{self};
@@ -65,28 +65,37 @@ struct Args {
 
 // `..` and symlinks survive lexical absolutisation, so two spellings of one file would compare unequal.
 fn resolve_output(path: &str) -> anyhow::Result<PathBuf> {
-    let path = std::path::absolute(path)?;
+    resolve_links(&std::path::absolute(path)?, 8)
+}
+
+fn resolve_links(path: &Path, hops: u8) -> anyhow::Result<PathBuf> {
     let (Some(parent), Some(file_name)) = (path.parent(), path.file_name()) else {
         anyhow::bail!("{} is not a path to a file", path.display());
     };
+    // only the parent is canonicalised, so an output that does not exist yet still resolves.
     let parent = std::fs::canonicalize(parent)
         .with_context(|| format!("cannot resolve the directory of {}", path.display()))?;
     let resolved = parent.join(file_name);
 
-    // canonicalising the parent leaves a symlinked file name pointing elsewhere, dangling ones included.
-    Ok(match std::fs::read_link(&resolved) {
-        Ok(target) => std::path::absolute(parent.join(target))?,
-        Err(_) => resolved,
-    })
+    let Ok(target) = std::fs::read_link(&resolved) else {
+        return Ok(resolved);
+    };
+    if hops == 0 {
+        anyhow::bail!(
+            "{} resolves through too many symbolic links",
+            path.display()
+        );
+    }
+    resolve_links(&parent.join(target), hops - 1)
 }
 
 impl Args {
-    fn validate(&self) -> anyhow::Result<()> {
+    fn validate(&self) -> anyhow::Result<PathBuf> {
+        let output_sqlite = resolve_output(&self.output_sqlite)?;
         let Some(output_slot) = self.output_slot.as_deref() else {
-            return Ok(());
+            return Ok(output_sqlite);
         };
         let output_slot = resolve_output(output_slot)?;
-        let output_sqlite = resolve_output(&self.output_sqlite)?;
 
         if output_slot == output_sqlite {
             anyhow::bail!(
@@ -101,7 +110,7 @@ impl Args {
             );
         }
 
-        Ok(())
+        Ok(output_sqlite)
     }
 }
 
@@ -111,7 +120,7 @@ async fn main() -> anyhow::Result<()> {
     builder.filter_module("solana_metrics::metrics", LevelFilter::Error);
     builder.init();
     let args: Args = Args::parse();
-    args.validate()?;
+    let output_sqlite = args.validate()?;
 
     let now = SystemTime::now();
     let since_the_epoch = now.duration_since(UNIX_EPOCH)?;
@@ -170,7 +179,7 @@ async fn main() -> anyhow::Result<()> {
                 .send(())
                 .expect("Failed to send ready signal");
             let db = snapshot_parser_tokens_cli::db_connection::SQLiteExecutor::new(
-                PathBuf::from(&args.output_sqlite),
+                output_sqlite,
                 args.sqlite_cache_size,
                 args.sqlite_mmap_size,
                 args.sqlite_tx_bulk,
