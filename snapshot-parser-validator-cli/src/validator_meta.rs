@@ -1,6 +1,7 @@
 use crate::jito_priority_fee::fetch_jito_priority_fee_metas;
 use {
     crate::jito_mev::fetch_jito_mev_metas,
+    agave_feature_set::FeatureSnapshot,
     log::info,
     serde::{Deserialize, Serialize},
     snapshot_parser::serde_serialize::option_pubkey_string_conversion,
@@ -29,21 +30,39 @@ pub struct ValidatorMeta {
     pub credits: u64,
     /// SIMD-0185 // VoteStateV4 // inflation_rewards_collector, read at
     /// `ValidatorMetaCollection::collector_vintage`; `None` on a pre-v4 vote state
-    #[serde(with = "option_pubkey_string_conversion")]
+    #[serde(default, with = "option_pubkey_string_conversion")]
     pub inflation_rewards_collector: Option<Pubkey>,
-    /// SIMD-0185 // VoteStateV4 // inflation_rewards_commission_bps, read at
-    /// `ValidatorMetaCollection::commission_vintage`; `None` on a pre-v4 vote state,
-    /// which only carries the integer percent published as `commission`
+    /// the inflation rewards commission in basis points agave applies to `epoch`,
+    /// taken from `ValidatorMetaCollection::commission_vintage`. A pre-v4 vote
+    /// state has no basis-point field and agave synthesizes `commission * 100`
+    /// from its integer percent, so this is always the number agave applies,
+    /// whichever vote state version the vintage holds. `None` only in a file
+    /// written before this field existed.
+    #[serde(default)]
     pub inflation_rewards_commission_bps: Option<u16>,
-    /// SIMD-0185 // VoteStateV4 // block_revenue_collector, read at
-    /// `ValidatorMetaCollection::commission_vintage`; `None` on a pre-v4 vote state
-    #[serde(with = "option_pubkey_string_conversion")]
+    /// `true` when `inflation_rewards_commission_bps` is the VoteStateV4 field
+    /// itself, `false` when it is `commission * 100` synthesized from a pre-v4
+    /// vote state. `None` only in a file written before this field existed.
+    #[serde(default)]
+    pub inflation_rewards_commission_bps_is_v4: Option<bool>,
+    /// SIMD-0185 // VoteStateV4 // block_revenue_collector, read from
+    /// `epoch_stakes(epoch)` alone: agave resolves it there with no fallback, so
+    /// `None` means agave has no collector to pay and credits the leader
+    /// identity instead. Always `None` for every validator when
+    /// `commission_vintage.epoch_stakes_key` is not `Some(epoch)`, because then
+    /// the bank does not carry that snapshot at all.
+    #[serde(default, with = "option_pubkey_string_conversion")]
     pub block_revenue_collector: Option<Pubkey>,
-    /// SIMD-0185 // VoteStateV4 // block_revenue_commission_bps, read at
-    /// `ValidatorMetaCollection::commission_vintage`; `None` on a pre-v4 vote state
+    /// SIMD-0185 // VoteStateV4 // block_revenue_commission_bps as held by the
+    /// same snapshot as `block_revenue_collector`. Nothing in agave 4.2.1 reads
+    /// it: `deposit_or_burn_fee` credits the whole non-burned deposit to the
+    /// collector and applies no split.
+    #[serde(default)]
     pub block_revenue_commission_bps: Option<u16>,
-    /// SIMD-0185 // VoteStateV4 // pending_delegator_rewards, read at
-    /// `ValidatorMetaCollection::collector_vintage`; `None` on a pre-v4 vote state
+    /// SIMD-0185 // VoteStateV4 // pending_delegator_rewards as of `slot`.
+    /// Written by the vote program and read by nothing in agave 4.2.1's reward
+    /// path, so it is published as observed rather than at a vintage.
+    #[serde(default)]
     pub pending_delegator_rewards: Option<u64>,
 }
 
@@ -81,14 +100,72 @@ impl VoteStateVintage {
         }
     }
 
-    /// The stakes cache of a bank frozen at the last slot of `epoch`. agave
-    /// snapshots exactly this state into `epoch_stakes(epoch + 2)` at the first
-    /// slot of the distribution epoch and reads the inflation rewards collector
-    /// out of it.
+    /// The stakes cache of a bank frozen at the last slot of `epoch`, which is
+    /// the state agave reads the inflation rewards collector out of. agave
+    /// snapshots it into `epoch_stakes(epoch + 2)` at the first slot of the
+    /// distribution epoch, but only the accounts that survive SIMD-0357
+    /// admission filtering while `validator_admission_ticket` is active: for an
+    /// account carried by both the vote state is identical, what the filter
+    /// changes is set membership.
     fn from_live_stakes_cache(epoch: Epoch) -> Self {
         Self {
             epoch_stakes_key: None,
             captured_at_epoch: epoch.saturating_add(1),
+        }
+    }
+}
+
+/// The agave features that decide how the vintages in this collection are used.
+#[derive(Clone, Deserialize, Serialize, Debug, Default, Eq, PartialEq)]
+pub struct SnapshotFeatures {
+    /// agave `custom_commission_collector` (SIMD-0232) as of `slot`, which is
+    /// exactly the value agave applies to block revenue produced during `epoch`:
+    /// `deposit_or_burn_fee` reads the feature set of the bank that produces the
+    /// block. While it is false the runtime credits the leader identity.
+    pub block_revenue_custom_collector_active: bool,
+    /// agave `custom_commission_collector` (SIMD-0232) for `epoch`'s inflation
+    /// rewards; while it is false the runtime ignores
+    /// `ValidatorMeta::inflation_rewards_collector` and pays the vote account
+    pub inflation_rewards_custom_collector_active: Option<bool>,
+    /// agave `delay_commission_updates` for `epoch`'s inflation rewards; while
+    /// it is false the runtime ignores `commission_vintage` and takes the
+    /// commission from the vote state at `slot`
+    pub inflation_rewards_delay_commission_updates_active: Option<bool>,
+    /// agave `commission_rate_in_basis_points` for `epoch`'s inflation rewards;
+    /// while it is false the runtime applies `commission * 100` and ignores a
+    /// VoteStateV4 basis-point commission
+    pub inflation_rewards_commission_rate_in_basis_points_active: Option<bool>,
+    /// agave `validator_admission_ticket` (SIMD-0357) for `epoch`'s inflation
+    /// rewards; while it is true agave pays them only to the vote accounts that
+    /// survive admission filtering, and this collection still carries a row for
+    /// every vote account the bank holds
+    pub inflation_rewards_validator_admission_ticket_active: Option<bool>,
+}
+
+impl SnapshotFeatures {
+    /// agave calculates `epoch`'s inflation rewards on the first bank of
+    /// `epoch + 1`, after that bank has applied its own feature activations, so
+    /// a flag inactive at `slot` may still be active there. Features never
+    /// deactivate, so an already active flag is all this bank can prove:
+    /// `Some(true)` once active, `None` while not.
+    fn on_the_distribution_bank(active_at_slot: bool) -> Option<bool> {
+        active_at_slot.then_some(true)
+    }
+
+    fn from_feature_snapshot(features: &FeatureSnapshot) -> Self {
+        Self {
+            block_revenue_custom_collector_active: features.custom_commission_collector,
+            inflation_rewards_custom_collector_active: Self::on_the_distribution_bank(
+                features.custom_commission_collector,
+            ),
+            inflation_rewards_delay_commission_updates_active: Self::on_the_distribution_bank(
+                features.delay_commission_updates,
+            ),
+            inflation_rewards_commission_rate_in_basis_points_active:
+                Self::on_the_distribution_bank(features.commission_rate_in_basis_points),
+            inflation_rewards_validator_admission_ticket_active: Self::on_the_distribution_bank(
+                features.validator_admission_ticket,
+            ),
         }
     }
 }
@@ -102,19 +179,25 @@ pub struct ValidatorMetaCollection {
     pub validator_rate: f64,
     pub validator_rewards: u64,
     pub validator_metas: Vec<ValidatorMeta>,
-    /// vintage of the vote state behind `inflation_rewards_commission_bps`,
-    /// `block_revenue_collector` and `block_revenue_commission_bps`
+    /// vintage of the vote state behind
+    /// `ValidatorMeta::inflation_rewards_commission_bps`
+    #[serde(default)]
     pub commission_vintage: VoteStateVintage,
-    /// vintage of the vote state behind `inflation_rewards_collector` and
-    /// `pending_delegator_rewards`
+    /// vintage of the vote state behind
+    /// `ValidatorMeta::inflation_rewards_collector`
+    #[serde(default)]
     pub collector_vintage: VoteStateVintage,
-    /// vote accounts absent from `commission_vintage` — too young to be carried
-    /// by it — whose commission fields agave resolves, and so does this
-    /// collection, from the next snapshot instead
+    /// vote accounts the snapshot `commission_vintage` names does not carry —
+    /// too young to be in it, dropped from it by admission filtering, or closed
+    /// and recreated since it was taken — whose commission agave resolves, and
+    /// so does this collection, from the next snapshot instead. Counted against
+    /// the snapshot `commission_vintage` names, so it is 0 when that is the
+    /// live stakes cache, which carries every vote account by construction.
+    #[serde(default)]
     pub commission_vintage_fallbacks: usize,
-    /// agave `custom_commission_collector` (SIMD-0232) as of `slot`; while this
-    /// is false the runtime ignores both collectors and pays the vote account
-    pub custom_commission_collector_active: bool,
+    /// agave features this collection's vintages depend on, as of `slot`
+    #[serde(default)]
+    pub features: SnapshotFeatures,
 }
 
 impl ValidatorMetaCollection {
@@ -150,7 +233,8 @@ struct VoteAccountMeta {
     stake: u64,
     credits: u64,
     inflation_rewards_collector: Option<Pubkey>,
-    inflation_rewards_commission_bps: Option<u16>,
+    inflation_rewards_commission_bps: u16,
+    inflation_rewards_commission_bps_is_v4: bool,
     block_revenue_collector: Option<Pubkey>,
     block_revenue_commission_bps: Option<u16>,
     pending_delegator_rewards: Option<u64>,
@@ -162,51 +246,60 @@ struct VoteAccountMetaCollection {
     commission_vintage_fallbacks: usize,
 }
 
-/// SIMD-0185 fields whose value for a rewarded epoch is the one held by the
-/// commission vintage.
-struct V4CommissionFields {
-    inflation_rewards_commission_bps: u16,
-    block_revenue_collector: Pubkey,
-    block_revenue_commission_bps: u16,
+/// The inflation rewards commission agave applies, and whether the vote state it
+/// came from carries basis points of its own.
+struct InflationRewardsCommission {
+    bps: u16,
+    is_v4: bool,
 }
 
-/// SIMD-0185 fields whose value for a rewarded epoch is the one held by the
-/// collector vintage.
+/// SIMD-0185 fields agave reads from the vote state at the end of the rewarded
+/// epoch.
 struct V4CollectorFields {
     inflation_rewards_collector: Pubkey,
     pending_delegator_rewards: u64,
 }
 
-/// `VoteStateView` answers every SIMD-0185 getter, synthesizing a value on a
-/// pre-v4 vote state — `commission * 100` bps, a full 10000 bps block revenue
-/// commission, zero pending rewards. Only the collector getters report absence,
-/// so they are what gates each group.
-fn v4_commission_fields(vote_state_view: &VoteStateView) -> Option<V4CommissionFields> {
-    let block_revenue_collector = *vote_state_view.block_revenue_collector()?;
+/// SIMD-0232 block revenue fields, which are payable only while the vote state
+/// carrying them is v4.
+struct V4BlockRevenueFields {
+    block_revenue_collector: Pubkey,
+    block_revenue_commission_bps: u16,
+}
 
-    Some(V4CommissionFields {
-        inflation_rewards_commission_bps: vote_state_view.inflation_rewards_commission(),
-        block_revenue_collector,
-        block_revenue_commission_bps: vote_state_view.block_revenue_commission(),
-    })
+/// `VoteStateView::inflation_rewards_commission` is defined on a pre-v4 vote
+/// state too, where it synthesizes `commission * 100`, and agave applies that
+/// synthesized value verbatim. Only the collector getters report absence, so
+/// `inflation_rewards_collector` is what tells the two vote state versions apart.
+fn inflation_rewards_commission(vote_state_view: &VoteStateView) -> InflationRewardsCommission {
+    InflationRewardsCommission {
+        bps: vote_state_view.inflation_rewards_commission(),
+        is_v4: vote_state_view.inflation_rewards_collector().is_some(),
+    }
 }
 
 fn v4_collector_fields(vote_state_view: &VoteStateView) -> Option<V4CollectorFields> {
-    let inflation_rewards_collector = *vote_state_view.inflation_rewards_collector()?;
-
     Some(V4CollectorFields {
-        inflation_rewards_collector,
+        inflation_rewards_collector: *vote_state_view.inflation_rewards_collector()?,
         pending_delegator_rewards: vote_state_view.pending_delegator_rewards(),
+    })
+}
+
+fn v4_block_revenue_fields(vote_state_view: &VoteStateView) -> Option<V4BlockRevenueFields> {
+    Some(V4BlockRevenueFields {
+        block_revenue_collector: *vote_state_view.block_revenue_collector()?,
+        block_revenue_commission_bps: vote_state_view.block_revenue_commission(),
     })
 }
 
 /// The vote-account snapshots agave applies to a rewarded epoch's commission.
 ///
 /// `primary` is agave `snapshot_epoch_vote_accounts`, the anti-rug snapshot the
-/// runtime reads the inflation rewards commission from, and the same snapshot
+/// runtime reads the inflation rewards commission from, and the only snapshot
 /// SIMD-0232 reads the block revenue collector from while the epoch is being
 /// produced. `fallback` is agave `rewarded_epoch_vote_accounts`, which the
-/// runtime falls back to for a vote account the anti-rug snapshot does not carry.
+/// runtime falls back to for the commission of a vote account the anti-rug
+/// snapshot does not carry.
 struct CommissionVintageSource<'a> {
     primary: Option<&'a VoteAccountsHashMap>,
     fallback: Option<&'a VoteAccountsHashMap>,
@@ -214,10 +307,13 @@ struct CommissionVintageSource<'a> {
 }
 
 impl<'a> CommissionVintageSource<'a> {
-    fn new(bank: &'a Bank, epoch: Epoch) -> Self {
+    fn new(
+        epoch_vote_accounts: impl Fn(Epoch) -> Option<&'a VoteAccountsHashMap>,
+        epoch: Epoch,
+    ) -> Self {
         Self {
-            primary: bank.epoch_vote_accounts(epoch),
-            fallback: bank.epoch_vote_accounts(epoch.saturating_add(1)),
+            primary: epoch_vote_accounts(epoch),
+            fallback: epoch_vote_accounts(epoch.saturating_add(1)),
             epoch,
         }
     }
@@ -232,12 +328,26 @@ impl<'a> CommissionVintageSource<'a> {
         }
     }
 
-    fn view(&self, vote_account: &Pubkey) -> Option<&'a VoteStateView> {
-        Self::lookup(self.primary, vote_account)
+    /// The snapshot `vintage` names, or `None` when that is the live stakes cache.
+    fn vintage_accounts(&self) -> Option<&'a VoteAccountsHashMap> {
+        self.primary.or(self.fallback)
     }
 
-    fn fallback_view(&self, vote_account: &Pubkey) -> Option<&'a VoteStateView> {
-        Self::lookup(self.fallback, vote_account)
+    fn misses_its_vintage(&self, vote_account: &Pubkey) -> bool {
+        self.vintage_accounts()
+            .is_some_and(|vote_accounts| !vote_accounts.contains_key(vote_account))
+    }
+
+    /// agave `snapshot_epoch_vote_accounts.or_else(rewarded_epoch_vote_accounts)`.
+    fn commission_view(&self, vote_account: &Pubkey) -> Option<&'a VoteStateView> {
+        Self::lookup(self.primary, vote_account)
+            .or_else(|| Self::lookup(self.fallback, vote_account))
+    }
+
+    /// agave resolves the block revenue collector through `epoch_stakes(epoch)`
+    /// alone and expects the leader to be in it, so absent there is absent.
+    fn block_revenue_view(&self, vote_account: &Pubkey) -> Option<&'a VoteStateView> {
+        Self::lookup(self.primary, vote_account)
     }
 
     fn lookup(
@@ -250,9 +360,12 @@ impl<'a> CommissionVintageSource<'a> {
     }
 }
 
-fn fetch_vote_account_metas(bank: &Arc<Bank>, epoch: Epoch) -> VoteAccountMetaCollection {
-    let commission_source = CommissionVintageSource::new(bank, epoch);
-    let live_vote_accounts = bank.vote_accounts();
+fn fetch_vote_account_metas<'a>(
+    live_vote_accounts: &VoteAccountsHashMap,
+    epoch_vote_accounts: impl Fn(Epoch) -> Option<&'a VoteAccountsHashMap>,
+    epoch: Epoch,
+) -> VoteAccountMetaCollection {
+    let commission_source = CommissionVintageSource::new(epoch_vote_accounts, epoch);
     let mut commission_vintage_fallbacks = 0;
     let mut metas = Vec::with_capacity(live_vote_accounts.len());
 
@@ -269,17 +382,18 @@ fn fetch_vote_account_metas(bank: &Arc<Bank>, epoch: Epoch) -> VoteAccountMetaCo
             })
             .unwrap_or(0);
 
-        let commission_view = match commission_source.view(pubkey) {
-            Some(commission_view) => commission_view,
-            None => {
-                commission_vintage_fallbacks += 1;
-                commission_source
-                    .fallback_view(pubkey)
-                    .unwrap_or(vote_state_view)
-            }
-        };
-        let commission_fields = v4_commission_fields(commission_view);
+        if commission_source.misses_its_vintage(pubkey) {
+            commission_vintage_fallbacks += 1;
+        }
+        let commission = inflation_rewards_commission(
+            commission_source
+                .commission_view(pubkey)
+                .unwrap_or(vote_state_view),
+        );
         let collector_fields = v4_collector_fields(vote_state_view);
+        let block_revenue_fields = commission_source
+            .block_revenue_view(pubkey)
+            .and_then(v4_block_revenue_fields);
 
         metas.push(VoteAccountMeta {
             vote_account: *pubkey,
@@ -289,13 +403,12 @@ fn fetch_vote_account_metas(bank: &Arc<Bank>, epoch: Epoch) -> VoteAccountMetaCo
             inflation_rewards_collector: collector_fields
                 .as_ref()
                 .map(|fields| fields.inflation_rewards_collector),
-            inflation_rewards_commission_bps: commission_fields
-                .as_ref()
-                .map(|fields| fields.inflation_rewards_commission_bps),
-            block_revenue_collector: commission_fields
+            inflation_rewards_commission_bps: commission.bps,
+            inflation_rewards_commission_bps_is_v4: commission.is_v4,
+            block_revenue_collector: block_revenue_fields
                 .as_ref()
                 .map(|fields| fields.block_revenue_collector),
-            block_revenue_commission_bps: commission_fields
+            block_revenue_commission_bps: block_revenue_fields
                 .as_ref()
                 .map(|fields| fields.block_revenue_commission_bps),
             pending_delegator_rewards: collector_fields
@@ -311,6 +424,19 @@ fn fetch_vote_account_metas(bank: &Arc<Bank>, epoch: Epoch) -> VoteAccountMetaCo
     }
 }
 
+/// `collector_vintage` and `commission_vintage` only describe a bank frozen at
+/// the last slot of its epoch; a mid-epoch archive would silently mislabel every
+/// field read out of the live stakes cache.
+fn check_end_of_epoch_bank(slot: u64, last_slot_in_epoch: u64, epoch: Epoch) -> anyhow::Result<()> {
+    if slot != last_slot_in_epoch {
+        anyhow::bail!(
+            "Bank is at slot {slot}, not the last slot {last_slot_in_epoch} of epoch {epoch}; the vote state vintages this collection records would not hold. Parse the end-of-epoch snapshot instead."
+        );
+    }
+
+    Ok(())
+}
+
 pub fn generate_validator_collection(
     bank: &Arc<Bank>,
     tip_distribution_accounts: &[(Pubkey, AccountSharedData)],
@@ -324,6 +450,11 @@ pub fn generate_validator_collection(
         absolute_slot,
         ..
     } = bank.get_epoch_info();
+    check_end_of_epoch_bank(
+        absolute_slot,
+        bank.epoch_schedule().get_last_slot_in_epoch(epoch),
+        epoch,
+    )?;
 
     let validator_rate = bank
         .inflation()
@@ -333,14 +464,18 @@ pub fn generate_validator_collection(
     let validator_rewards =
         (validator_rate * capitalization as f64 * epoch_duration_in_years) as u64;
 
+    let live_vote_accounts = bank.vote_accounts();
     let VoteAccountMetaCollection {
         metas: vote_account_metas,
         commission_vintage,
         commission_vintage_fallbacks,
-    } = fetch_vote_account_metas(bank, epoch);
+    } = fetch_vote_account_metas(
+        &live_vote_accounts,
+        |epoch| bank.epoch_vote_accounts(epoch),
+        epoch,
+    );
     let collector_vintage = VoteStateVintage::from_live_stakes_cache(epoch);
-    let custom_commission_collector_active =
-        bank.feature_set.snapshot().custom_commission_collector;
+    let features = SnapshotFeatures::from_feature_snapshot(bank.feature_set.snapshot());
     let jito_mev_metas = fetch_jito_mev_metas(tip_distribution_accounts, epoch)?;
     let jito_priority_fee_metas = fetch_jito_priority_fee_metas(
         priority_fee_distribution_accounts,
@@ -389,8 +524,12 @@ pub fn generate_validator_collection(
                 stake: vote_account_meta.stake,
                 credits: vote_account_meta.credits,
                 inflation_rewards_collector: vote_account_meta.inflation_rewards_collector,
-                inflation_rewards_commission_bps: vote_account_meta
-                    .inflation_rewards_commission_bps,
+                inflation_rewards_commission_bps: Some(
+                    vote_account_meta.inflation_rewards_commission_bps,
+                ),
+                inflation_rewards_commission_bps_is_v4: Some(
+                    vote_account_meta.inflation_rewards_commission_bps_is_v4,
+                ),
                 block_revenue_collector: vote_account_meta.block_revenue_collector,
                 block_revenue_commission_bps: vote_account_meta.block_revenue_commission_bps,
                 pending_delegator_rewards: vote_account_meta.pending_delegator_rewards,
@@ -428,14 +567,11 @@ pub fn generate_validator_collection(
         v4_validators, total_validators
     );
     info!(
-        "Commission vintage: {:?}, resolved through the fallback for {} / {} vote accounts",
+        "Commission vintage: {:?}, missing {} / {} vote accounts that are resolved from the next snapshot instead",
         commission_vintage, commission_vintage_fallbacks, total_validators
     );
     info!("Collector vintage: {:?}", collector_vintage);
-    info!(
-        "SIMD-0232 custom commission collector active: {}",
-        custom_commission_collector_active
-    );
+    info!("Snapshot features: {:?}", features);
 
     if total_credits == 0 {
         anyhow::bail!(
@@ -458,7 +594,7 @@ pub fn generate_validator_collection(
         commission_vintage,
         collector_vintage,
         commission_vintage_fallbacks,
-        custom_commission_collector_active,
+        features,
     })
 }
 
@@ -466,71 +602,275 @@ pub fn generate_validator_collection(
 mod tests {
     use {
         super::*,
+        agave_feature_set::FeatureSet,
+        solana_vote::vote_account::VoteAccount,
         solana_vote_interface::state::{VoteStateV3, VoteStateV4, VoteStateVersions},
+        std::collections::HashMap,
     };
+
+    const VOTE_PROGRAM_ID: &str = "Vote111111111111111111111111111111111111111";
+    const EPOCH: Epoch = 900;
+    const INFLATION_REWARDS_COLLECTOR: Pubkey = Pubkey::new_from_array([1u8; 32]);
+    const BLOCK_REVENUE_COLLECTOR: Pubkey = Pubkey::new_from_array([2u8; 32]);
+    const VOTE_ACCOUNT: Pubkey = Pubkey::new_from_array([7u8; 32]);
+    const OTHER_VOTE_ACCOUNT: Pubkey = Pubkey::new_from_array([8u8; 32]);
+
+    fn v3(commission: u8) -> VoteStateVersions {
+        VoteStateVersions::new_v3(VoteStateV3 {
+            commission,
+            ..VoteStateV3::default()
+        })
+    }
+
+    fn v4(inflation_rewards_commission_bps: u16) -> VoteStateVersions {
+        VoteStateVersions::new_v4(VoteStateV4 {
+            inflation_rewards_collector: INFLATION_REWARDS_COLLECTOR,
+            block_revenue_collector: BLOCK_REVENUE_COLLECTOR,
+            inflation_rewards_commission_bps,
+            block_revenue_commission_bps: 1234,
+            pending_delegator_rewards: 987_654_321,
+            ..VoteStateV4::default()
+        })
+    }
 
     fn vote_state_view(vote_state_versions: VoteStateVersions) -> VoteStateView {
         VoteStateView::try_new(Arc::new(bincode::serialize(&vote_state_versions).unwrap())).unwrap()
     }
 
-    fn v4_vote_state_view() -> VoteStateView {
-        vote_state_view(VoteStateVersions::new_v4(VoteStateV4 {
-            inflation_rewards_collector: Pubkey::new_from_array([1u8; 32]),
-            block_revenue_collector: Pubkey::new_from_array([2u8; 32]),
-            inflation_rewards_commission_bps: 733,
-            block_revenue_commission_bps: 1234,
-            pending_delegator_rewards: 987_654_321,
-            ..VoteStateV4::default()
-        }))
+    fn vote_accounts<const N: usize>(
+        entries: [(Pubkey, VoteStateVersions); N],
+    ) -> VoteAccountsHashMap {
+        entries
+            .into_iter()
+            .map(|(pubkey, vote_state_versions)| {
+                let account = AccountSharedData::create_from_existing_shared_data(
+                    1,
+                    Arc::new(bincode::serialize(&vote_state_versions).unwrap()),
+                    VOTE_PROGRAM_ID.parse().unwrap(),
+                    false,
+                    0,
+                );
+                (pubkey, (42, VoteAccount::try_from(account).unwrap()))
+            })
+            .collect()
+    }
+
+    fn meta_of<'a>(
+        collection: &'a VoteAccountMetaCollection,
+        vote_account: &Pubkey,
+    ) -> &'a VoteAccountMeta {
+        collection
+            .metas
+            .iter()
+            .find(|meta| &meta.vote_account == vote_account)
+            .expect("every live vote account gets a meta")
+    }
+
+    fn metas_from(
+        live_vote_accounts: &VoteAccountsHashMap,
+        epoch_stakes: &HashMap<Epoch, VoteAccountsHashMap>,
+    ) -> VoteAccountMetaCollection {
+        fetch_vote_account_metas(live_vote_accounts, |epoch| epoch_stakes.get(&epoch), EPOCH)
+    }
+
+    // The whole point of the anti-rug snapshot: a validator that converts to v4
+    // and sets 100% mid-epoch is still paid at the commission it published a
+    // full epoch earlier, even though that vintage carries no basis-point field.
+    #[test]
+    fn a_mid_epoch_v4_conversion_is_still_paid_at_the_snapshot_vintage_commission() {
+        let live = vote_accounts([(VOTE_ACCOUNT, v4(10_000))]);
+        let epoch_stakes = HashMap::from([(EPOCH, vote_accounts([(VOTE_ACCOUNT, v3(5))]))]);
+
+        let collection = metas_from(&live, &epoch_stakes);
+        let meta = meta_of(&collection, &VOTE_ACCOUNT);
+
+        assert_eq!(
+            meta.inflation_rewards_commission_bps, 500,
+            "agave synthesizes commission * 100 out of the pre-v4 vintage and pays that"
+        );
+        assert!(!meta.inflation_rewards_commission_bps_is_v4);
+        assert_eq!(
+            meta.commission, 100,
+            "the legacy percent stays the live, rugged one"
+        );
+        assert_eq!(
+            meta.inflation_rewards_collector,
+            Some(INFLATION_REWARDS_COLLECTOR),
+            "the collector is read at the distribution vintage, where the state is v4"
+        );
+        assert_eq!(
+            meta.block_revenue_collector, None,
+            "the block revenue collector vintage still holds a pre-v4 state"
+        );
+        assert_eq!(collection.commission_vintage_fallbacks, 0);
     }
 
     #[test]
-    fn a_v4_vote_state_yields_both_collectors_and_both_commissions() {
-        let vote_state_view = v4_vote_state_view();
+    fn a_v4_commission_vintage_is_published_as_its_own_basis_points() {
+        let live = vote_accounts([(VOTE_ACCOUNT, v3(9))]);
+        let epoch_stakes = HashMap::from([(EPOCH, vote_accounts([(VOTE_ACCOUNT, v4(733))]))]);
 
-        let commission_fields = v4_commission_fields(&vote_state_view).unwrap();
-        assert_eq!(commission_fields.inflation_rewards_commission_bps, 733);
-        assert_eq!(
-            commission_fields.block_revenue_collector,
-            Pubkey::new_from_array([2u8; 32])
-        );
-        assert_eq!(commission_fields.block_revenue_commission_bps, 1234);
+        let collection = metas_from(&live, &epoch_stakes);
+        let meta = meta_of(&collection, &VOTE_ACCOUNT);
 
-        let collector_fields = v4_collector_fields(&vote_state_view).unwrap();
+        assert_eq!(meta.inflation_rewards_commission_bps, 733);
+        assert!(meta.inflation_rewards_commission_bps_is_v4);
+        assert_eq!(meta.block_revenue_collector, Some(BLOCK_REVENUE_COLLECTOR));
+        assert_eq!(meta.block_revenue_commission_bps, Some(1234));
         assert_eq!(
-            collector_fields.inflation_rewards_collector,
-            Pubkey::new_from_array([1u8; 32])
+            meta.pending_delegator_rewards, None,
+            "pending delegator rewards are observed at the slot, where the state is pre-v4"
         );
-        assert_eq!(collector_fields.pending_delegator_rewards, 987_654_321);
+    }
+
+    // agave reads the commission from epoch_stakes(rewarded_epoch), the snapshot
+    // taken a full epoch before the rewarded one.
+    #[test]
+    fn the_commission_comes_from_the_epoch_stakes_snapshot_keyed_by_the_rewarded_epoch() {
+        let live = vote_accounts([(VOTE_ACCOUNT, v4(9_000))]);
+        let epoch_stakes = HashMap::from([
+            (EPOCH - 1, vote_accounts([(VOTE_ACCOUNT, v4(4_000))])),
+            (EPOCH, vote_accounts([(VOTE_ACCOUNT, v4(5_000))])),
+            (EPOCH + 1, vote_accounts([(VOTE_ACCOUNT, v4(6_000))])),
+            (EPOCH + 2, vote_accounts([(VOTE_ACCOUNT, v4(7_000))])),
+        ]);
+
+        let collection = metas_from(&live, &epoch_stakes);
+
+        assert_eq!(
+            meta_of(&collection, &VOTE_ACCOUNT).inflation_rewards_commission_bps,
+            5_000
+        );
+        assert_eq!(
+            collection.commission_vintage,
+            VoteStateVintage::from_epoch_stakes(EPOCH)
+        );
+        assert_eq!(collection.commission_vintage_fallbacks, 0);
+    }
+
+    // agave: snapshot_epoch_vote_accounts.or_else(rewarded_epoch_vote_accounts).
+    #[test]
+    fn a_vote_account_the_snapshot_vintage_misses_falls_back_to_the_next_snapshot() {
+        let live = vote_accounts([(VOTE_ACCOUNT, v4(9_000)), (OTHER_VOTE_ACCOUNT, v4(9_000))]);
+        let epoch_stakes = HashMap::from([
+            (EPOCH, vote_accounts([(OTHER_VOTE_ACCOUNT, v4(5_000))])),
+            (
+                EPOCH + 1,
+                vote_accounts([(VOTE_ACCOUNT, v4(6_000)), (OTHER_VOTE_ACCOUNT, v4(6_000))]),
+            ),
+        ]);
+
+        let collection = metas_from(&live, &epoch_stakes);
+
+        assert_eq!(
+            meta_of(&collection, &VOTE_ACCOUNT).inflation_rewards_commission_bps,
+            6_000,
+            "the account too young for the anti-rug snapshot is resolved from the next one"
+        );
+        assert_eq!(
+            meta_of(&collection, &OTHER_VOTE_ACCOUNT).inflation_rewards_commission_bps,
+            5_000
+        );
+        assert_eq!(collection.commission_vintage_fallbacks, 1);
+        assert_eq!(
+            collection.commission_vintage,
+            VoteStateVintage::from_epoch_stakes(EPOCH)
+        );
+    }
+
+    #[test]
+    fn a_vote_account_no_snapshot_carries_is_resolved_from_the_state_at_the_slot() {
+        let live = vote_accounts([(VOTE_ACCOUNT, v4(9_000))]);
+        let epoch_stakes =
+            HashMap::from([(EPOCH, vote_accounts([(OTHER_VOTE_ACCOUNT, v4(5_000))]))]);
+
+        let collection = metas_from(&live, &epoch_stakes);
+
+        assert_eq!(
+            meta_of(&collection, &VOTE_ACCOUNT).inflation_rewards_commission_bps,
+            9_000
+        );
+        assert_eq!(collection.commission_vintage_fallbacks, 1);
+    }
+
+    // agave resolves the block revenue collector through epoch_stakes(epoch) with
+    // no fallback, so a vintage agave would never read must not leak into it.
+    #[test]
+    fn the_block_revenue_collector_is_absent_when_the_snapshot_vintage_is() {
+        let live = vote_accounts([(VOTE_ACCOUNT, v4(9_000))]);
+        let epoch_stakes = HashMap::from([
+            (EPOCH, vote_accounts([(OTHER_VOTE_ACCOUNT, v4(5_000))])),
+            (EPOCH + 1, vote_accounts([(VOTE_ACCOUNT, v4(6_000))])),
+        ]);
+
+        let collection = metas_from(&live, &epoch_stakes);
+        let meta = meta_of(&collection, &VOTE_ACCOUNT);
+
+        assert_eq!(meta.block_revenue_collector, None);
+        assert_eq!(meta.block_revenue_commission_bps, None);
+        assert_eq!(
+            meta.inflation_rewards_commission_bps, 6_000,
+            "only the commission follows agave's fallback"
+        );
+    }
+
+    // A collection cannot say "my vintage is the next snapshot" and "N accounts
+    // were missing from my vintage" at the same time.
+    #[test]
+    fn a_missing_snapshot_vintage_makes_the_next_one_the_vintage_and_counts_no_fallback() {
+        let live = vote_accounts([(VOTE_ACCOUNT, v4(9_000))]);
+        let epoch_stakes = HashMap::from([(EPOCH + 1, vote_accounts([(VOTE_ACCOUNT, v4(6_000))]))]);
+
+        let collection = metas_from(&live, &epoch_stakes);
+
+        assert_eq!(
+            collection.commission_vintage,
+            VoteStateVintage::from_epoch_stakes(EPOCH + 1)
+        );
+        assert_eq!(collection.commission_vintage_fallbacks, 0);
+        assert_eq!(
+            meta_of(&collection, &VOTE_ACCOUNT).inflation_rewards_commission_bps,
+            6_000
+        );
+    }
+
+    #[test]
+    fn no_snapshot_at_all_makes_the_live_stakes_cache_the_vintage_and_counts_no_fallback() {
+        let live = vote_accounts([(VOTE_ACCOUNT, v4(9_000))]);
+
+        let collection = metas_from(&live, &HashMap::new());
+
+        assert_eq!(
+            collection.commission_vintage,
+            VoteStateVintage::from_live_stakes_cache(EPOCH)
+        );
+        assert_eq!(collection.commission_vintage_fallbacks, 0);
+        assert_eq!(
+            meta_of(&collection, &VOTE_ACCOUNT).inflation_rewards_commission_bps,
+            9_000
+        );
     }
 
     #[test]
     fn the_legacy_commission_stays_the_lossy_percent_of_the_v4_basis_points() {
-        assert_eq!(v4_vote_state_view().commission(), 7);
+        assert_eq!(vote_state_view(v4(733)).commission(), 7);
     }
 
     #[test]
-    fn a_pre_v4_vote_state_yields_no_v4_fields_and_an_unchanged_commission() {
-        let vote_state_view = vote_state_view(VoteStateVersions::new_v3(VoteStateV3 {
-            commission: 9,
-            ..VoteStateV3::default()
-        }));
+    fn a_pre_v4_vote_state_yields_no_v4_only_fields_and_an_unchanged_commission() {
+        let vote_state_view = vote_state_view(v3(9));
 
-        assert!(v4_commission_fields(&vote_state_view).is_none());
         assert!(v4_collector_fields(&vote_state_view).is_none());
+        assert!(v4_block_revenue_fields(&vote_state_view).is_none());
         assert_eq!(vote_state_view.commission(), 9);
     }
 
     #[test]
-    fn a_pre_v4_vote_state_still_answers_the_synthesized_v4_getters() {
-        let vote_state_view = vote_state_view(VoteStateVersions::new_v3(VoteStateV3 {
-            commission: 9,
-            ..VoteStateV3::default()
-        }));
+    fn a_pre_v4_vote_state_still_answers_the_synthesized_commission_getter() {
+        let commission = inflation_rewards_commission(&vote_state_view(v3(9)));
 
-        assert_eq!(vote_state_view.inflation_rewards_commission(), 900);
-        assert_eq!(vote_state_view.block_revenue_commission(), 10_000);
-        assert_eq!(vote_state_view.pending_delegator_rewards(), 0);
+        assert_eq!(commission.bps, 900);
+        assert!(!commission.is_v4);
     }
 
     #[test]
@@ -555,18 +895,81 @@ mod tests {
         );
     }
 
+    // Each flag has to name the feature that governs it: the block revenue
+    // collector is gated on custom_commission_collector, not on a neighbour.
+    #[test]
+    fn every_published_flag_reports_its_own_feature() {
+        let mut features = FeatureSet::default().snapshot().clone();
+        features.commission_rate_in_basis_points = true;
+        features.delay_commission_updates = true;
+        features.validator_admission_ticket = true;
+
+        assert_eq!(
+            SnapshotFeatures::from_feature_snapshot(&features),
+            SnapshotFeatures {
+                block_revenue_custom_collector_active: false,
+                inflation_rewards_custom_collector_active: None,
+                inflation_rewards_delay_commission_updates_active: Some(true),
+                inflation_rewards_commission_rate_in_basis_points_active: Some(true),
+                inflation_rewards_validator_admission_ticket_active: Some(true),
+            }
+        );
+
+        features.custom_commission_collector = true;
+
+        assert_eq!(
+            SnapshotFeatures::from_feature_snapshot(&features),
+            SnapshotFeatures {
+                block_revenue_custom_collector_active: true,
+                inflation_rewards_custom_collector_active: Some(true),
+                inflation_rewards_delay_commission_updates_active: Some(true),
+                inflation_rewards_commission_rate_in_basis_points_active: Some(true),
+                inflation_rewards_validator_admission_ticket_active: Some(true),
+            }
+        );
+    }
+
+    #[test]
+    fn a_flag_inactive_at_the_slot_is_not_reported_as_inactive_for_the_inflation_rewards() {
+        let features = SnapshotFeatures::from_feature_snapshot(FeatureSet::default().snapshot());
+
+        assert!(!features.block_revenue_custom_collector_active);
+        assert_eq!(features.inflation_rewards_custom_collector_active, None);
+        assert_eq!(
+            features.inflation_rewards_delay_commission_updates_active,
+            None
+        );
+    }
+
+    #[test]
+    fn a_bank_at_the_last_slot_of_its_epoch_is_accepted() {
+        check_end_of_epoch_bank(433_295_999, 433_295_999, 1002).unwrap();
+    }
+
+    #[test]
+    fn a_bank_short_of_the_last_slot_of_its_epoch_is_rejected() {
+        let err = check_end_of_epoch_bank(433_000_000, 433_295_999, 1002)
+            .expect_err("a mid-epoch archive would mislabel every recorded vintage");
+
+        assert!(
+            err.to_string().contains("433295999"),
+            "the error must name the slot the snapshot should have been taken at: {err}"
+        );
+    }
+
     fn validator_meta() -> ValidatorMeta {
         ValidatorMeta {
-            vote_account: Pubkey::new_from_array([7u8; 32]),
+            vote_account: VOTE_ACCOUNT,
             commission: 7,
             mev_commission: Some(1000),
             jito_priority_fee_commission: Some(2000),
             jito_priority_fee_lamports: 123,
             stake: 456,
             credits: 789,
-            inflation_rewards_collector: Some(Pubkey::new_from_array([1u8; 32])),
+            inflation_rewards_collector: Some(INFLATION_REWARDS_COLLECTOR),
             inflation_rewards_commission_bps: Some(733),
-            block_revenue_collector: Some(Pubkey::new_from_array([2u8; 32])),
+            inflation_rewards_commission_bps_is_v4: Some(true),
+            block_revenue_collector: Some(BLOCK_REVENUE_COLLECTOR),
             block_revenue_commission_bps: Some(1234),
             pending_delegator_rewards: Some(987_654_321),
         }
@@ -588,6 +991,7 @@ mod tests {
                 "credits": 789,
                 "inflation_rewards_collector": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
                 "inflation_rewards_commission_bps": 733,
+                "inflation_rewards_commission_bps_is_v4": true,
                 "block_revenue_collector": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
                 "block_revenue_commission_bps": 1234,
                 "pending_delegator_rewards": 987_654_321,
@@ -599,7 +1003,8 @@ mod tests {
     fn a_pre_v4_validator_meta_serializes_to_the_pre_simd_0185_shape_plus_nulls() {
         let pre_v4 = ValidatorMeta {
             inflation_rewards_collector: None,
-            inflation_rewards_commission_bps: None,
+            inflation_rewards_commission_bps: Some(900),
+            inflation_rewards_commission_bps_is_v4: Some(false),
             block_revenue_collector: None,
             block_revenue_commission_bps: None,
             pending_delegator_rewards: None,
@@ -617,7 +1022,8 @@ mod tests {
                 "stake": 456,
                 "credits": 789,
                 "inflation_rewards_collector": null,
-                "inflation_rewards_commission_bps": null,
+                "inflation_rewards_commission_bps": 900,
+                "inflation_rewards_commission_bps_is_v4": false,
                 "block_revenue_collector": null,
                 "block_revenue_commission_bps": null,
                 "pending_delegator_rewards": null,
@@ -638,7 +1044,13 @@ mod tests {
             commission_vintage: VoteStateVintage::from_epoch_stakes(900),
             collector_vintage: VoteStateVintage::from_live_stakes_cache(900),
             commission_vintage_fallbacks: 3,
-            custom_commission_collector_active: true,
+            features: SnapshotFeatures {
+                block_revenue_custom_collector_active: true,
+                inflation_rewards_custom_collector_active: Some(true),
+                inflation_rewards_delay_commission_updates_active: Some(true),
+                inflation_rewards_commission_rate_in_basis_points_active: None,
+                inflation_rewards_validator_admission_ticket_active: Some(true),
+            },
         };
 
         let mut value = serde_json::to_value(collection).unwrap();
@@ -661,7 +1073,13 @@ mod tests {
                     "captured_at_epoch": 901,
                 },
                 "commission_vintage_fallbacks": 3,
-                "custom_commission_collector_active": true,
+                "features": {
+                    "block_revenue_custom_collector_active": true,
+                    "inflation_rewards_custom_collector_active": true,
+                    "inflation_rewards_delay_commission_updates_active": true,
+                    "inflation_rewards_commission_rate_in_basis_points_active": null,
+                    "inflation_rewards_validator_admission_ticket_active": true,
+                },
             })
         );
     }
@@ -673,5 +1091,46 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&meta).unwrap()).unwrap();
 
         assert_eq!(meta, deserialized);
+    }
+
+    // A backfill or replay reads validators.json files written before SIMD-0185
+    // was published at all; every one of them has to keep deserializing.
+    #[test]
+    fn a_pre_simd_0185_validators_json_still_deserializes() {
+        let collection: ValidatorMetaCollection = serde_json::from_str(
+            r#"{
+                "epoch": 900,
+                "slot": 1000,
+                "capitalization": 5,
+                "epoch_duration_in_years": 0.5,
+                "validator_rate": 0.04,
+                "validator_rewards": 42,
+                "validator_metas": [
+                    {
+                        "vote_account": "US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx",
+                        "commission": 7,
+                        "mev_commission": 1000,
+                        "jito_priority_fee_commission": 2000,
+                        "jito_priority_fee_lamports": 123,
+                        "stake": 456,
+                        "credits": 789
+                    }
+                ]
+            }"#,
+        )
+        .expect("an archived pre-SIMD-0185 validators.json must still be readable");
+
+        assert_eq!(collection.epoch, 900);
+        assert_eq!(collection.commission_vintage_fallbacks, 0);
+        assert_eq!(collection.features, SnapshotFeatures::default());
+        let meta = &collection.validator_metas[0];
+        assert_eq!(meta.commission, 7);
+        assert_eq!(meta.stake, 456);
+        assert_eq!(meta.inflation_rewards_collector, None);
+        assert_eq!(meta.inflation_rewards_commission_bps, None);
+        assert_eq!(meta.inflation_rewards_commission_bps_is_v4, None);
+        assert_eq!(meta.block_revenue_collector, None);
+        assert_eq!(meta.block_revenue_commission_bps, None);
+        assert_eq!(meta.pending_delegator_rewards, None);
     }
 }
