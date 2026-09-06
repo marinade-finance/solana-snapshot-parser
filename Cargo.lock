@@ -5198,6 +5198,8 @@ dependencies = [
  "solana-runtime",
  "solana-sdk",
  "solana-stake-interface",
+ "solana-vote",
+ "solana-vote-interface",
 ]
 
 [[package]]

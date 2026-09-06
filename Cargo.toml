@@ -50,4 +50,6 @@ solana-runtime = "=4.2.1"
 solana-sdk = "=4.0.1"
 solana-accounts-db = "=4.2.1"
 solana-stake-interface = { version = "=4.3.0", features = ["serde", "sysvar"] }
+solana-vote = { version = "=4.2.1", features = ["agave-unstable-api"] }
+solana-vote-interface = { version = "=6.0.3", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
