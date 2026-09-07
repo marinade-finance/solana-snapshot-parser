@@ -21,6 +21,42 @@ the last slot of an epoch. `snapshot-parser-validator-cli` refuses a snapshot
 taken anywhere else rather than mislabel them, so the archive handed to
 `--ledger-path` has to be the end-of-epoch one.
 
+### Which vintage each `validators.json` field is read at
+
+agave keys `Bank::epoch_stakes` by leader schedule epoch, so `epoch_stakes(E)`
+holds vote state as captured at the first slot of `E - 1`. For a bank frozen at
+the last slot of epoch E the parser reads each field from the snapshot agave
+itself reads it from, and publishes the vintage beside it:
+
+| field | source | agave |
+|---|---|---|
+| `inflation_rewards_collector`, `pending_delegator_rewards` | live stakes cache at `slot`, published as `collector_vintage` | `filtered_distribution_vote_accounts`, snapshotted into `epoch_stakes(E+2)` |
+| `inflation_rewards_commission_bps` | `epoch_stakes(E)`, falling back to `epoch_stakes(E+1)` then to the state at `slot`, published as `commission_vintage` | `snapshot_epoch_vote_accounts.or_else(rewarded_epoch_vote_accounts)` in `get_cached_vote_accounts` |
+| `block_revenue_collector`, `block_revenue_commission_bps` | `epoch_stakes(E)` only, no fallback | `deposit_or_burn_fee`, which resolves the leader there and expects it to be present |
+
+Two counters say how many vote accounts missed the commission vintage:
+`commission_vintage_next_snapshot_fallbacks` were answered by
+`epoch_stakes(E+1)`, `commission_vintage_live_state_fallbacks` by neither
+snapshot. Both are 0 when `commission_vintage` is the live stakes cache, since
+then no snapshot was named to fall back from.
+
+The collector vintage is the one place the parser is knowingly wider than agave:
+`bank.vote_accounts()` is unfiltered, while agave pays only the vote accounts
+that survive SIMD-0357 admission filtering, so a filtered-out account still gets
+a row here and earns nothing. `features.inflation_rewards_validator_admission_ticket_active`
+says whether that filter is in play; the top-N part of it is not something an
+end-of-E bank can reproduce.
+
+`features` publishes the agave flags these vintages depend on. The two block
+revenue flags are independent and neither stands in for the other:
+`block_revenue_custom_collector_active` (SIMD-0232) decides whether the
+collector is honoured at all, and `block_revenue_sharing_active` (SIMD-0123)
+decides whether `block_revenue_commission_bps` splits anything. The inflation
+flags are `Option<bool>`, reported as `Some(true)` once active and `None` while
+not: agave calculates epoch E's rewards on the first bank of E+1 after that bank
+has applied its own activations, so this bank can prove a flag active but never
+prove one inactive.
+
 `--output-leader-schedule` is optional and off by default. When it is given, the
 parser rebuilds the epoch's leader schedule from `epoch_stakes(epoch)` and writes
 one row per slot, keyed by vote account as SIMD-0180 keys it, with the node
@@ -28,6 +64,17 @@ identity from the same vote account. That is 432,000 rows for a mainnet epoch, s
 the file is written as compact JSON: still a single JSON array of flat objects,
 which is what `jq '.[]'` and `bq load --source_format=NEWLINE_DELIMITED_JSON`
 consume, just without the indentation.
+
+Keying by vote account rather than identity is what SIMD-0232 requires: once a
+`Fee` reward row is credited to a `block_revenue_collector` the validator may
+point anywhere, the row stops naming the leader, and only the schedule does. It
+is not a fix for identity multiplicity as things stand - mainnet on 2026-09-07
+held 6853 vote accounts over 6467 identities, 247 of them with more than one
+vote account, but **zero** with more than one *staked* vote account, and only
+staked accounts enter a schedule. The 9 leaders whose identity carries an extra
+unstaked vote account are ambiguous only to a resolver that also sees unstaked
+accounts, which is what makes an identity-keyed join fragile rather than already
+wrong.
 
 ### The leader schedule contract with the stakes ETL
 

@@ -13,55 +13,32 @@ use {
 #[allow(deprecated)]
 use solana_sdk::epoch_schedule::EpochSchedule;
 
-/// One slot of an epoch and the leader agave assigned to it.
-///
-/// SIMD-0180 keys the leader schedule by vote account, and that is the key
-/// `Bank::deposit_or_burn_fee` resolves the block revenue collector under. RPC
-/// `getLeaderSchedule` still answers with `node_pubkey`, and identity to vote is
-/// not one to one, so the pair has to be published together to be usable.
-///
-/// The collection is a flat row per slot rather than a header plus a grouped
-/// body because the stakes ETL loads `leader-schedule.json` with
-/// `jq '.[]' -rc` into `bq load --source_format=NEWLINE_DELIMITED_JSON`:
-/// nothing outside a row survives that, and a nested object would be a column
-/// the load has not been told about, so the vintage rides on every row as the
-/// two scalars it is.
+// A flat row per slot, with the vintage repeated on each, because the stakes ETL loads
+// this through `jq '.[]'` where nothing outside a row survives. See README for the
+// column contract this shape owes that pipeline.
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct LeaderScheduleEntry {
-    /// epoch the schedule was drawn for, which is also the epoch `slot` falls in
     pub epoch: Epoch,
-    /// absolute slot, not an index into the epoch
+    // absolute slot, not an index into the epoch
     pub slot: u64,
-    /// vote account this slot's leader is keyed by
     #[serde(with = "pubkey_string_conversion")]
     pub vote_pubkey: Pubkey,
-    /// node identity `vote_pubkey`'s own vote state carries in the snapshot
-    /// `vintage_epoch_stakes_key` names, read from the same vote account the
-    /// schedule drew `vote_pubkey` from
+    // identity carried by the same vote account the schedule drew vote_pubkey from, so it
+    // dates to vintage_captured_at_epoch and not to now
     #[serde(with = "pubkey_string_conversion")]
     pub node_pubkey: Pubkey,
-    /// `Bank::epoch_stakes` key the schedule was drawn from, which for the
-    /// schedule of `epoch` is `epoch` itself
     pub vintage_epoch_stakes_key: Epoch,
-    /// epoch at whose first slot the vote states in that snapshot were
-    /// captured, i.e. the epoch before `vintage_epoch_stakes_key`
     pub vintage_captured_at_epoch: Epoch,
 }
 
-/// agave builds epoch `epoch`'s leader schedule from `epoch_stakes(epoch)`:
-/// `LeaderScheduleCache::compute_leader_schedule` calls
-/// `leader_schedule_utils::leader_schedule`, which reads
-/// `bank.epoch_vote_accounts(epoch)`, i.e.
-/// `epoch_stakes[epoch].stakes().vote_accounts()`. `deposit_or_burn_fee` then
-/// looks the resulting `vote_address` up in that same snapshot, so the schedule
-/// and the collector it feeds share one vintage.
+// deposit_or_burn_fee looks the resulting vote_address up in the same epoch_stakes(epoch)
+// this draws from, so the schedule and the collector it feeds share one vintage
 fn leader_schedule_entries(
     epoch: Epoch,
     epoch_schedule: &EpochSchedule,
     epoch_vote_accounts: &VoteAccountsHashMap,
 ) -> anyhow::Result<Vec<LeaderScheduleEntry>> {
-    // LeaderSchedule::new draws from the accounts with positive stake and panics
-    // when there are none, which an end-of-epoch mainnet bank never has
+    // LeaderSchedule::new panics rather than returning when nothing is staked
     if !epoch_vote_accounts
         .values()
         .any(|(stake, _vote_account)| *stake > 0)
@@ -73,8 +50,6 @@ fn leader_schedule_entries(
         leader_schedule_from_vote_accounts(epoch, epoch_schedule, epoch_vote_accounts)
             .ok_or_else(|| anyhow::anyhow!("No leader schedule for epoch {epoch}"))?;
     let vintage = VoteStateVintage::from_epoch_stakes(epoch);
-    // Only the live stakes cache has no epoch_stakes key, and no leader
-    // schedule is drawn from it, so this names a snapshot for every epoch
     let vintage_epoch_stakes_key = vintage.epoch_stakes_key.ok_or_else(|| {
         anyhow::anyhow!("Leader schedule vintage for epoch {epoch} names no epoch stakes snapshot")
     })?;
@@ -93,9 +68,8 @@ fn leader_schedule_entries(
         })
         .collect();
 
-    // LeaderSchedule::new takes the slot count as usize and keeps one entry per
-    // NUM_CONSECUTIVE_LEADER_SLOTS, so a slot count that is not a multiple of
-    // the leader window would silently truncate the last window.
+    // a slot count that is not a multiple of NUM_CONSECUTIVE_LEADER_SLOTS would leave
+    // LeaderSchedule::new silently truncating the last leader window
     let slots_in_epoch = epoch_schedule.get_slots_in_epoch(epoch);
     if entries.len() as u64 != slots_in_epoch {
         anyhow::bail!(

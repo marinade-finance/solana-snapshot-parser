@@ -46,9 +46,6 @@ pub fn write_to_json_file<T: Serialize>(data: &T, out_path: &str) -> anyhow::Res
     })
 }
 
-/// The same JSON document `write_to_json_file` produces, minus the indentation,
-/// which is a fifth of the bytes of a file of many short rows that nothing reads
-/// by eye.
 pub fn write_to_compact_json_file<T: Serialize>(data: &T, out_path: &str) -> anyhow::Result<()> {
     write_atomic(out_path, |writer| {
         serde_json::to_writer(writer, data)?;
