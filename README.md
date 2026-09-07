@@ -28,3 +28,40 @@ identity from the same vote account. That is 432,000 rows for a mainnet epoch, s
 the file is written as compact JSON: still a single JSON array of flat objects,
 which is what `jq '.[]'` and `bq load --source_format=NEWLINE_DELIMITED_JSON`
 consume, just without the indentation.
+
+### The leader schedule contract with the stakes ETL
+
+The file is named `leader-schedule.json`, and the pipeline that runs the parser
+for an epoch has to publish it as `<snapshot bucket>/<epoch>/leader-schedule.json` -
+`$GCLOUD_SNAPSHOTS/$epoch/` here, `$GS_SNAPSHOT_BUCKET/<epoch>/` on the consuming
+side, one bucket under two names - next to the `stakes.json` and
+`validators.json` it already publishes there. Publishing is that pipeline's job;
+the parser only writes the path it is given, so `--output-leader-schedule` has to
+name that file. The
+[stakes ETL](https://github.com/marinade-finance/stakes-etl) fetches exactly that
+object, loads it into `mainnet_beta_stakes.leader_schedule` with
+`jq '.[]' -rc | bq load --source_format=NEWLINE_DELIMITED_JSON`, and refuses a
+file that carries anything else.
+
+The document is one compact JSON array of flat objects, each of them exactly
+these six keys and no others:
+
+| key | type | BigQuery |
+|---|---|---|
+| `epoch` | integer | `INT64` |
+| `slot` | integer | `INT64` |
+| `vote_pubkey` | base58 string | `STRING(44)` |
+| `node_pubkey` | base58 string | `STRING(44)` |
+| `vintage_epoch_stakes_key` | integer | `INT64` |
+| `vintage_captured_at_epoch` | integer | `INT64` |
+
+The two vintage keys are `VoteStateVintage` flattened out per row, not a nested
+object: the load has one column per key, and nothing outside a row survives
+`jq '.[]'`, so a collection-level header would never reach BigQuery.
+`vintage_epoch_stakes_key` is the `Bank::epoch_stakes` snapshot the schedule was
+drawn from, which for the schedule of epoch E is E itself - the stakes ETL
+refuses a schedule of epoch E whose rows say anything else, since that file
+would re-attribute a whole epoch of block fees to another epoch's leaders - and
+`vintage_captured_at_epoch` is the epoch at whose first slot the vote states in
+that snapshot were captured, i.e. E-1. A renamed or nested key breaks the shape
+test in `leader_schedule.rs` rather than a production `bq load`.

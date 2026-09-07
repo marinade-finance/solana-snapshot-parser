@@ -21,9 +21,11 @@ use solana_sdk::epoch_schedule::EpochSchedule;
 /// not one to one, so the pair has to be published together to be usable.
 ///
 /// The collection is a flat row per slot rather than a header plus a grouped
-/// body because the stakes ETL loads it with `jq '.[]' -rc` into
-/// `bq load --source_format=NEWLINE_DELIMITED_JSON`: nothing outside a row
-/// survives that, so `vintage` rides on every row.
+/// body because the stakes ETL loads `leader-schedule.json` with
+/// `jq '.[]' -rc` into `bq load --source_format=NEWLINE_DELIMITED_JSON`:
+/// nothing outside a row survives that, and a nested object would be a column
+/// the load has not been told about, so the vintage rides on every row as the
+/// two scalars it is.
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct LeaderScheduleEntry {
     /// epoch the schedule was drawn for, which is also the epoch `slot` falls in
@@ -33,12 +35,17 @@ pub struct LeaderScheduleEntry {
     /// vote account this slot's leader is keyed by
     #[serde(with = "pubkey_string_conversion")]
     pub vote_pubkey: Pubkey,
-    /// node identity held by `vote_pubkey`'s own vote state in `vintage`, read
-    /// from the same vote account the schedule drew `vote_pubkey` from
+    /// node identity `vote_pubkey`'s own vote state carries in the snapshot
+    /// `vintage_epoch_stakes_key` names, read from the same vote account the
+    /// schedule drew `vote_pubkey` from
     #[serde(with = "pubkey_string_conversion")]
     pub node_pubkey: Pubkey,
-    /// vote-account state the schedule was built from
-    pub vintage: VoteStateVintage,
+    /// `Bank::epoch_stakes` key the schedule was drawn from, which for the
+    /// schedule of `epoch` is `epoch` itself
+    pub vintage_epoch_stakes_key: Epoch,
+    /// epoch at whose first slot the vote states in that snapshot were
+    /// captured, i.e. the epoch before `vintage_epoch_stakes_key`
+    pub vintage_captured_at_epoch: Epoch,
 }
 
 /// agave builds epoch `epoch`'s leader schedule from `epoch_stakes(epoch)`:
@@ -66,6 +73,11 @@ fn leader_schedule_entries(
         leader_schedule_from_vote_accounts(epoch, epoch_schedule, epoch_vote_accounts)
             .ok_or_else(|| anyhow::anyhow!("No leader schedule for epoch {epoch}"))?;
     let vintage = VoteStateVintage::from_epoch_stakes(epoch);
+    // Only the live stakes cache has no epoch_stakes key, and no leader
+    // schedule is drawn from it, so this names a snapshot for every epoch
+    let vintage_epoch_stakes_key = vintage.epoch_stakes_key.ok_or_else(|| {
+        anyhow::anyhow!("Leader schedule vintage for epoch {epoch} names no epoch stakes snapshot")
+    })?;
     let first_slot_in_epoch = epoch_schedule.get_first_slot_in_epoch(epoch);
 
     let entries: Vec<LeaderScheduleEntry> = leader_schedule
@@ -76,7 +88,8 @@ fn leader_schedule_entries(
             slot: first_slot_in_epoch.saturating_add(slot_index as u64),
             vote_pubkey: slot_leader.vote_address,
             node_pubkey: slot_leader.id,
-            vintage: vintage.clone(),
+            vintage_epoch_stakes_key,
+            vintage_captured_at_epoch: vintage.captured_at_epoch,
         })
         .collect();
 
@@ -324,14 +337,18 @@ mod tests {
         let entries =
             leader_schedule_entries(EPOCH, &mainnet_epoch_schedule(), &two_validators()).unwrap();
 
-        assert!(entries.iter().all(|entry| entry.vintage
-            == VoteStateVintage {
-                epoch_stakes_key: Some(EPOCH),
-                captured_at_epoch: EPOCH - 1,
-            }));
+        assert!(entries
+            .iter()
+            .all(|entry| entry.vintage_epoch_stakes_key == EPOCH
+                && entry.vintage_captured_at_epoch == EPOCH - 1));
+
+        let vintage = VoteStateVintage::from_epoch_stakes(EPOCH);
         assert_eq!(
-            entries.first().unwrap().vintage,
-            VoteStateVintage::from_epoch_stakes(EPOCH),
+            (
+                Some(entries.first().unwrap().vintage_epoch_stakes_key),
+                entries.first().unwrap().vintage_captured_at_epoch
+            ),
+            (vintage.epoch_stakes_key, vintage.captured_at_epoch),
             "the vintage has to be the one validator_meta records for the same snapshot"
         );
     }
@@ -345,7 +362,8 @@ mod tests {
             slot: 433_295_999,
             vote_pubkey: VOTE_ACCOUNT,
             node_pubkey: NODE,
-            vintage: VoteStateVintage::from_epoch_stakes(1002),
+            vintage_epoch_stakes_key: 1002,
+            vintage_captured_at_epoch: 1001,
         };
 
         assert_eq!(
@@ -355,10 +373,8 @@ mod tests {
                 "slot": 433_295_999u64,
                 "vote_pubkey": "US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx",
                 "node_pubkey": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
-                "vintage": {
-                    "epoch_stakes_key": 1002,
-                    "captured_at_epoch": 1001,
-                },
+                "vintage_epoch_stakes_key": 1002,
+                "vintage_captured_at_epoch": 1001,
             })
         );
         assert_eq!(
@@ -386,5 +402,28 @@ mod tests {
         assert!(rows.iter().all(|row| row
             .as_object()
             .is_some_and(|row| row["vote_pubkey"].is_string() && row["slot"].is_u64())));
+        // sorted, because serde_json keeps object keys in whatever order the
+        // preserve_order feature of the build leaves them in
+        let columns = [
+            "epoch",
+            "node_pubkey",
+            "slot",
+            "vintage_captured_at_epoch",
+            "vintage_epoch_stakes_key",
+            "vote_pubkey",
+        ];
+        for row in &rows {
+            let mut keys: Vec<&str> = row
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(
+                keys, columns,
+                "a row is exactly the six columns the stakes ETL loads, with no nested object among them"
+            );
+        }
     }
 }
