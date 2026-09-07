@@ -16,10 +16,14 @@ The `agave-unstable-api` feature is enabled on the `solana-ledger` crate in `Car
 These interfaces may change or break without warning in future Agave releases.
 
 The validator meta collection records which cached vote-account state each
-SIMD-0185 field was read from, and those vintages only hold for a bank frozen at
-the last slot of an epoch. `snapshot-parser-validator-cli` refuses a snapshot
-taken anywhere else rather than mislabel them, so the archive handed to
-`--ledger-path` has to be the end-of-epoch one.
+SIMD-0185 field was read from, and those vintages hold for any bank frozen inside
+the epoch it reports: `epoch_stakes(E)` and `epoch_stakes(E+1)` are created before
+epoch E starts and agave keeps both for its whole length.
+`snapshot-parser-validator-cli` therefore refuses only an archive that has crossed
+into the next epoch, and warns when the bank is short of the epoch's last slot -
+the leader of that slot may simply have skipped it, leaving no bank there to parse.
+A bank short of the boundary reads `credits` and the collector vintage that many
+slots early, and publishes the `slot` it read them at.
 
 ### Which vintage each `validators.json` field is read at
 
@@ -30,7 +34,7 @@ itself reads it from, and publishes the vintage beside it:
 
 | field | source | agave |
 |---|---|---|
-| `inflation_rewards_collector`, `pending_delegator_rewards` | live stakes cache at `slot`, published as `collector_vintage` | `filtered_distribution_vote_accounts`, snapshotted into `epoch_stakes(E+2)` |
+| `inflation_rewards_collector`, `pending_delegator_rewards` | live stakes cache at `slot`, published as `collector_vintage` | `distribution_epoch_vote_accounts`, which is `epoch_stakes(E+2)` as the distribution bank snapshots it |
 | `inflation_rewards_commission_bps` | `epoch_stakes(E)`, falling back to `epoch_stakes(E+1)` then to the state at `slot`, published as `commission_vintage` | `snapshot_epoch_vote_accounts.or_else(rewarded_epoch_vote_accounts)` in `get_cached_vote_accounts` |
 | `block_revenue_collector`, `block_revenue_commission_bps` | `epoch_stakes(E)` only, no fallback | `deposit_or_burn_fee`, which resolves the leader there and expects it to be present |
 
@@ -38,7 +42,18 @@ Two counters say how many vote accounts missed the commission vintage:
 `commission_vintage_next_snapshot_fallbacks` were answered by
 `epoch_stakes(E+1)`, `commission_vintage_live_state_fallbacks` by neither
 snapshot. Both are 0 when `commission_vintage` is the live stakes cache, since
-then no snapshot was named to fall back from.
+then no snapshot was named to fall back from. Both vintages are `null` in a
+`validators.json` written before they were published - absence means the file
+recorded none, not that the live stakes cache was used.
+
+A third counter, `leader_schedule_vote_accounts_absent_at_slot`, is the one thing
+that ties the two output files together. The leader schedule is drawn from
+`epoch_stakes(E)` while `validator_metas` is built from the live stakes cache at
+`slot`, so a vote account that was staked when the schedule was fixed but closed
+before the epoch ended leads slots that no row here can answer for. It is normally
+0; when it is not, a `leader_schedule.vote_pubkey -> validators.vote_account` join
+has that many vote accounts with no right-hand side, and the parser logs a warning
+naming the count.
 
 The collector vintage is the one place the parser is knowingly wider than agave:
 `bank.vote_accounts()` is unfiltered, while agave pays only the vote accounts
@@ -64,6 +79,12 @@ identity from the same vote account. That is 432,000 rows for a mainnet epoch, s
 the file is written as compact JSON: still a single JSON array of flat objects,
 which is what `jq '.[]'` and `bq load --source_format=NEWLINE_DELIMITED_JSON`
 consume, just without the indentation.
+
+A failed leader schedule is not fatal unless `--require-leader-schedule true` says
+so, in the same way `--require-jito-stake-meta` governs the Jito collection. The
+mainnet pipeline passes `false` explicitly, so the epoch still publishes the three
+collections the stakes ETL cannot do without and the exit code alone says whether
+anything required failed.
 
 Keying by vote account rather than identity is what SIMD-0232 requires: once a
 `Fee` reward row is credited to a `block_revenue_collector` the validator may

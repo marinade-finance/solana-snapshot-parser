@@ -7,6 +7,7 @@ use crate::utils::jito_parser::{
     get_epoch_created_at, read_jito_commission_and_epoch, read_merkle_root_upload_authority,
 };
 use crate::utils::SliceAt;
+use crate::validator_meta::check_end_of_epoch_bank;
 use {
     log::{error, info, warn},
     serde::{Deserialize, Serialize},
@@ -159,12 +160,11 @@ pub fn generate_jito_stake_meta_collection(
     )?;
 
     let last_slot_in_epoch = bank.epoch_schedule().get_last_slot_in_epoch(epoch);
+    check_end_of_epoch_bank(bank.slot(), last_slot_in_epoch, epoch)?;
     if bank.slot() != last_slot_in_epoch {
         warn!(
-            "Snapshot slot is not the last slot of the epoch, tips of the remaining slots are missing and the collection may differ from what Jito publishes [epoch={}, slot={}, last_slot_in_epoch={}]",
-            epoch,
-            bank.slot(),
-            last_slot_in_epoch
+            "Tips of the slots after {} are missing, so the collection may differ from what Jito publishes",
+            bank.slot()
         );
     }
 

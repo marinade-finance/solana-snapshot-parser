@@ -2,7 +2,7 @@ use crate::jito_priority_fee::fetch_jito_priority_fee_metas;
 use {
     crate::jito_mev::fetch_jito_mev_metas,
     agave_feature_set::FeatureSnapshot,
-    log::info,
+    log::{info, warn},
     serde::{Deserialize, Serialize},
     snapshot_parser::serde_serialize::option_pubkey_string_conversion,
     snapshot_parser::serde_serialize::pubkey_string_conversion,
@@ -58,8 +58,7 @@ impl PartialOrd<Self> for ValidatorMeta {
     }
 }
 
-// agave keys Bank::epoch_stakes by leader schedule epoch, so epoch_stakes(E) holds
-// vote state as captured at the first slot of E - 1
+// agave keys Bank::epoch_stakes by leader schedule epoch, so epoch_stakes(E) is captured at the first slot of E-1
 #[derive(Clone, Deserialize, Serialize, Debug, Default, Eq, PartialEq)]
 pub struct VoteStateVintage {
     // None is the bank's live stakes cache, i.e. the state at ValidatorMetaCollection::slot
@@ -75,8 +74,7 @@ impl VoteStateVintage {
         }
     }
 
-    // agave reads the inflation rewards collector out of this and snapshots it into
-    // epoch_stakes(epoch + 2), minus the accounts SIMD-0357 admission filtering drops
+    // agave snapshots this into epoch_stakes(epoch + 2), minus what SIMD-0357 admission filtering drops
     fn from_live_stakes_cache(epoch: Epoch) -> Self {
         Self {
             epoch_stakes_key: None,
@@ -85,10 +83,7 @@ impl VoteStateVintage {
     }
 }
 
-// Whether each vintage in this collection is one agave actually acts on. The block
-// revenue flags are exact, since deposit_or_burn_fee reads the feature set of the bank
-// that produced the block; the inflation ones are the bank's own, which the
-// distribution bank of epoch + 1 can only have added to.
+// Block revenue flags are exact (deposit_or_burn_fee reads the producing bank); inflation ones are this bank's, which the epoch+1 distribution bank can only add to
 #[derive(Clone, Deserialize, Serialize, Debug, Default, Eq, PartialEq)]
 pub struct SnapshotFeatures {
     // agave custom_commission_collector, SIMD-0232; while false the runtime credits the leader identity
@@ -101,14 +96,12 @@ pub struct SnapshotFeatures {
     pub inflation_rewards_delay_commission_updates_active: Option<bool>,
     // while false the runtime applies commission * 100 and ignores a v4 basis-point commission
     pub inflation_rewards_commission_rate_in_basis_points_active: Option<bool>,
-    // while true agave pays only the vote accounts that survive admission filtering,
-    // and this collection still carries a row for every one the bank holds
+    // while true agave pays only the accounts surviving admission filtering; this collection still rows every one
     pub inflation_rewards_validator_admission_ticket_active: Option<bool>,
 }
 
 impl SnapshotFeatures {
-    // The distribution bank of epoch + 1 applies its own activations first, and features
-    // never deactivate, so active here is all this bank can prove and inactive proves nothing.
+    // features never deactivate and epoch+1 activates first, so active proves active and inactive proves nothing
     fn on_the_distribution_bank(active_at_slot: bool) -> Option<bool> {
         active_at_slot.then_some(true)
     }
@@ -141,47 +134,22 @@ pub struct ValidatorMetaCollection {
     pub validator_rate: f64,
     pub validator_rewards: u64,
     pub validator_metas: Vec<ValidatorMeta>,
+    // None means the file recorded none; epoch_stakes_key: None is itself a vintage, so Default would assert one
     #[serde(default)]
-    pub commission_vintage: VoteStateVintage,
+    pub commission_vintage: Option<VoteStateVintage>,
     #[serde(default)]
-    pub collector_vintage: VoteStateVintage,
-    // vote accounts absent from the snapshot commission_vintage names, whose commission
-    // agave takes from epoch_stakes(epoch + 1) instead - and so does this collection
+    pub collector_vintage: Option<VoteStateVintage>,
+    // absent from the commission_vintage snapshot, so agave and this collection both read epoch_stakes(epoch + 1)
     #[serde(default)]
     pub commission_vintage_next_snapshot_fallbacks: usize,
-    // absent from that snapshot and from the next one, leaving only the state at slot,
-    // which agave falls back to as well
+    // absent from that snapshot and the next, leaving the state at slot, which agave falls back to as well
     #[serde(default)]
     pub commission_vintage_live_state_fallbacks: usize,
+    // staked schedule-vintage members with no row here, whose vote_pubkey leader-schedule.json cannot join
+    #[serde(default)]
+    pub leader_schedule_vote_accounts_absent_at_slot: usize,
     #[serde(default)]
     pub features: SnapshotFeatures,
-}
-
-impl ValidatorMetaCollection {
-    pub fn total_stake_weighted_credits(&self) -> u128 {
-        self.validator_metas
-            .iter()
-            .map(|v| v.credits as u128 * v.stake as u128)
-            .sum()
-    }
-
-    /// sum of lamports staked to all validators
-    pub fn total_stake(&self) -> u64 {
-        self.validator_metas.iter().map(|v| v.stake).sum()
-    }
-
-    // TODO: DELETE ME? (not used anymore)
-    /// expected staker commission (MEV not calculated) reward for a staked lamport to be delivered by a validator
-    pub fn expected_epr(&self) -> f64 {
-        self.validator_rewards as f64 / self.total_stake() as f64
-    }
-
-    /// calculates expected staker reward per one staked lamport when particular commission is set
-    pub fn expected_epr_calculator(&self) -> impl Fn(u8) -> f64 {
-        let expected_epr = self.expected_epr();
-
-        move |commission: u8| expected_epr * (100.0 - commission as f64) / 100.0
-    }
 }
 
 struct VoteAccountMeta {
@@ -202,6 +170,7 @@ struct VoteAccountMetaCollection {
     commission_vintage: VoteStateVintage,
     commission_vintage_next_snapshot_fallbacks: usize,
     commission_vintage_live_state_fallbacks: usize,
+    leader_schedule_vote_accounts_absent_at_slot: usize,
 }
 
 struct InflationRewardsCommission {
@@ -219,8 +188,7 @@ struct V4BlockRevenueFields {
     block_revenue_commission_bps: u16,
 }
 
-// inflation_rewards_commission answers on a pre-v4 state too, so only the collector
-// getter reporting absence tells the two vote state versions apart
+// the commission getter answers on a pre-v4 state too, so only the collector's absence tells the versions apart
 fn inflation_rewards_commission(vote_state_view: &VoteStateView) -> InflationRewardsCommission {
     InflationRewardsCommission {
         bps: vote_state_view.inflation_rewards_commission(),
@@ -242,8 +210,7 @@ fn v4_block_revenue_fields(vote_state_view: &VoteStateView) -> Option<V4BlockRev
     })
 }
 
-// primary is agave snapshot_epoch_vote_accounts, the anti-rug snapshot, and fallback is
-// its rewarded_epoch_vote_accounts. Only primary answers the block revenue collector.
+// primary/fallback are agave's snapshot_epoch_vote_accounts and rewarded_epoch_vote_accounts; only primary answers block revenue
 struct CommissionVintageSource<'a> {
     primary: Option<&'a VoteAccountsHashMap>,
     fallback: Option<&'a VoteAccountsHashMap>,
@@ -272,8 +239,7 @@ impl<'a> CommissionVintageSource<'a> {
         }
     }
 
-    // agave snapshot_epoch_vote_accounts.or_else(rewarded_epoch_vote_accounts), paired with
-    // the epoch_stakes key it answered from so the caller can tell it from vintage()
+    // paired with the epoch_stakes key that answered, so the caller can tell it from vintage()
     fn commission_view(&self, vote_account: &Pubkey) -> Option<(&'a VoteStateView, Epoch)> {
         Self::lookup(self.primary, vote_account)
             .map(|view| (view, self.epoch))
@@ -283,10 +249,23 @@ impl<'a> CommissionVintageSource<'a> {
             })
     }
 
-    // agave resolves this through epoch_stakes(epoch) alone and expects the leader to be
-    // in it, so absent there is absent
+    // agave resolves this through epoch_stakes(epoch) alone, so absent there is absent
     fn block_revenue_view(&self, vote_account: &Pubkey) -> Option<&'a VoteStateView> {
         Self::lookup(self.primary, vote_account)
+    }
+
+    // LeaderSchedule::new drops unstaked accounts, so only staked members need a row to join against
+    fn staked_primary_absent_from(&self, live_vote_accounts: &VoteAccountsHashMap) -> usize {
+        self.primary
+            .map(|primary| {
+                primary
+                    .iter()
+                    .filter(|(vote_account, (stake, _vote_account))| {
+                        *stake > 0 && !live_vote_accounts.contains_key(*vote_account)
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
     }
 
     fn lookup(
@@ -370,17 +349,25 @@ fn fetch_vote_account_metas<'a>(
         commission_vintage,
         commission_vintage_next_snapshot_fallbacks,
         commission_vintage_live_state_fallbacks,
+        leader_schedule_vote_accounts_absent_at_slot: commission_source
+            .staked_primary_absent_from(live_vote_accounts),
     }
 }
 
+// A skipped last slot leaves the snapshot at an earlier one; only crossing into the next epoch breaks the vintages
 pub(crate) fn check_end_of_epoch_bank(
     slot: u64,
     last_slot_in_epoch: u64,
     epoch: Epoch,
 ) -> anyhow::Result<()> {
-    if slot != last_slot_in_epoch {
+    if slot > last_slot_in_epoch {
         anyhow::bail!(
-            "Bank is at slot {slot}, not the last slot {last_slot_in_epoch} of epoch {epoch}; the vote state vintages this collection records would not hold. Parse the end-of-epoch snapshot instead."
+            "Bank is at slot {slot}, past the last slot {last_slot_in_epoch} of epoch {epoch}; the vote state vintages this collection records would not hold. Parse the end-of-epoch snapshot instead."
+        );
+    }
+    if slot != last_slot_in_epoch {
+        warn!(
+            "Bank is at slot {slot}, short of the last slot {last_slot_in_epoch} of epoch {epoch}; credits and the collector vintage are read that many slots early"
         );
     }
 
@@ -420,6 +407,7 @@ pub fn generate_validator_collection(
         commission_vintage,
         commission_vintage_next_snapshot_fallbacks,
         commission_vintage_live_state_fallbacks,
+        leader_schedule_vote_accounts_absent_at_slot,
     } = fetch_vote_account_metas(
         &live_vote_accounts,
         |epoch| bank.epoch_vote_accounts(epoch),
@@ -525,6 +513,12 @@ pub fn generate_validator_collection(
         commission_vintage_live_state_fallbacks,
     );
     info!("Collector vintage: {:?}", collector_vintage);
+    if leader_schedule_vote_accounts_absent_at_slot > 0 {
+        warn!(
+            "{} staked vote accounts of the leader schedule vintage hold no row here; leader-schedule.json can name a vote_pubkey this collection cannot answer",
+            leader_schedule_vote_accounts_absent_at_slot
+        );
+    }
     info!("Snapshot features: {:?}", features);
 
     if total_credits == 0 {
@@ -545,10 +539,11 @@ pub fn generate_validator_collection(
         validator_rate,
         validator_rewards,
         validator_metas,
-        commission_vintage,
-        collector_vintage,
+        commission_vintage: Some(commission_vintage),
+        collector_vintage: Some(collector_vintage),
         commission_vintage_next_snapshot_fallbacks,
         commission_vintage_live_state_fallbacks,
+        leader_schedule_vote_accounts_absent_at_slot,
         features,
     })
 }
@@ -557,13 +552,12 @@ pub fn generate_validator_collection(
 mod tests {
     use {
         super::*,
+        crate::utils::vote_account_fixture::staked_vote_accounts,
         agave_feature_set::FeatureSet,
-        solana_vote::vote_account::VoteAccount,
         solana_vote_interface::state::{VoteStateV3, VoteStateV4, VoteStateVersions},
         std::collections::HashMap,
     };
 
-    const VOTE_PROGRAM_ID: &str = "Vote111111111111111111111111111111111111111";
     const EPOCH: Epoch = 900;
     const INFLATION_REWARDS_COLLECTOR: Pubkey = Pubkey::new_from_array([1u8; 32]);
     const BLOCK_REVENUE_COLLECTOR: Pubkey = Pubkey::new_from_array([2u8; 32]);
@@ -595,19 +589,9 @@ mod tests {
     fn vote_accounts<const N: usize>(
         entries: [(Pubkey, VoteStateVersions); N],
     ) -> VoteAccountsHashMap {
-        entries
-            .into_iter()
-            .map(|(pubkey, vote_state_versions)| {
-                let account = AccountSharedData::create_from_existing_shared_data(
-                    1,
-                    Arc::new(bincode::serialize(&vote_state_versions).unwrap()),
-                    VOTE_PROGRAM_ID.parse().unwrap(),
-                    false,
-                    0,
-                );
-                (pubkey, (42, VoteAccount::try_from(account).unwrap()))
-            })
-            .collect()
+        staked_vote_accounts(
+            entries.map(|(pubkey, vote_state_versions)| (pubkey, vote_state_versions, 42)),
+        )
     }
 
     fn meta_of<'a>(
@@ -628,9 +612,7 @@ mod tests {
         fetch_vote_account_metas(live_vote_accounts, |epoch| epoch_stakes.get(&epoch), EPOCH)
     }
 
-    // The whole point of the anti-rug snapshot: a validator that converts to v4
-    // and sets 100% mid-epoch is still paid at the commission it published a
-    // full epoch earlier, even though that vintage carries no basis-point field.
+    // the anti-rug snapshot: a mid-epoch conversion to v4 at 100% is still paid the pre-v4 vintage's commission
     #[test]
     fn a_mid_epoch_v4_conversion_is_still_paid_at_the_snapshot_vintage_commission() {
         let live = vote_accounts([(VOTE_ACCOUNT, v4(10_000))]);
@@ -679,8 +661,7 @@ mod tests {
         );
     }
 
-    // agave reads the commission from epoch_stakes(rewarded_epoch), the snapshot
-    // taken a full epoch before the rewarded one.
+    // agave reads it from epoch_stakes(rewarded_epoch), taken a full epoch before the rewarded one
     #[test]
     fn the_commission_comes_from_the_epoch_stakes_snapshot_keyed_by_the_rewarded_epoch() {
         let live = vote_accounts([(VOTE_ACCOUNT, v4(9_000))]);
@@ -758,8 +739,59 @@ mod tests {
         );
     }
 
-    // agave resolves the block revenue collector through epoch_stakes(epoch) with
-    // no fallback, so a vintage agave would never read must not leak into it.
+    // a staked schedule-vintage member gone by the slot leads slots no row here can be joined to
+    #[test]
+    fn a_staked_schedule_member_gone_by_the_slot_is_counted_as_absent() {
+        let live = vote_accounts([(VOTE_ACCOUNT, v4(9_000))]);
+        let epoch_stakes = HashMap::from([(
+            EPOCH,
+            vote_accounts([(VOTE_ACCOUNT, v4(5_000)), (OTHER_VOTE_ACCOUNT, v4(5_000))]),
+        )]);
+
+        let collection = metas_from(&live, &epoch_stakes);
+
+        assert_eq!(collection.leader_schedule_vote_accounts_absent_at_slot, 1);
+        assert!(
+            collection
+                .metas
+                .iter()
+                .all(|meta| meta.vote_account != OTHER_VOTE_ACCOUNT),
+            "the absent account is the one with no meta row"
+        );
+    }
+
+    #[test]
+    fn an_unstaked_schedule_member_gone_by_the_slot_is_not_counted() {
+        let live = vote_accounts([(VOTE_ACCOUNT, v4(9_000))]);
+        let mut vintage = vote_accounts([(VOTE_ACCOUNT, v4(5_000))]);
+        let (_, (_, unstaked)) = vote_accounts([(OTHER_VOTE_ACCOUNT, v4(5_000))])
+            .into_iter()
+            .next()
+            .unwrap();
+        vintage.insert(OTHER_VOTE_ACCOUNT, (0, unstaked));
+
+        let collection = metas_from(&live, &HashMap::from([(EPOCH, vintage)]));
+
+        assert_eq!(
+            collection.leader_schedule_vote_accounts_absent_at_slot, 0,
+            "LeaderSchedule::new drops an unstaked account, so it can never lead a slot"
+        );
+    }
+
+    #[test]
+    fn a_schedule_vintage_fully_present_at_the_slot_counts_none_absent() {
+        let live = vote_accounts([(VOTE_ACCOUNT, v4(9_000)), (OTHER_VOTE_ACCOUNT, v4(9_000))]);
+        let epoch_stakes = HashMap::from([(
+            EPOCH,
+            vote_accounts([(VOTE_ACCOUNT, v4(5_000)), (OTHER_VOTE_ACCOUNT, v4(5_000))]),
+        )]);
+
+        let collection = metas_from(&live, &epoch_stakes);
+
+        assert_eq!(collection.leader_schedule_vote_accounts_absent_at_slot, 0);
+    }
+
+    // agave takes this from epoch_stakes(epoch) with no fallback, so no other vintage may leak in
     #[test]
     fn the_block_revenue_collector_is_absent_when_the_snapshot_vintage_is() {
         let live = vote_accounts([(VOTE_ACCOUNT, v4(9_000))]);
@@ -779,8 +811,7 @@ mod tests {
         );
     }
 
-    // A collection cannot say "my vintage is the next snapshot" and "N accounts
-    // were missing from my vintage" at the same time.
+    // a collection cannot both name the next snapshot as its vintage and count accounts missing from it
     #[test]
     fn a_missing_snapshot_vintage_makes_the_next_one_the_vintage_and_counts_no_fallback() {
         let live = vote_accounts([(VOTE_ACCOUNT, v4(9_000))]);
@@ -865,8 +896,7 @@ mod tests {
         );
     }
 
-    // Each flag has to name the feature that governs it: the block revenue
-    // collector is gated on custom_commission_collector, not on a neighbour.
+    // each flag must name the feature governing it, not a neighbour
     #[test]
     fn every_published_flag_reports_its_own_feature() {
         let mut features = FeatureSet::default().snapshot().clone();
@@ -916,8 +946,7 @@ mod tests {
         );
     }
 
-    // The two block revenue features are independent: SIMD-0232 redirects the deposit
-    // and SIMD-0123 splits it, so a published flag must not stand in for the other.
+    // SIMD-0232 redirects the deposit and SIMD-0123 splits it, so neither flag stands in for the other
     #[test]
     fn the_block_revenue_split_is_not_reported_by_the_collector_flag() {
         let mut features = FeatureSet::default().snapshot().clone();
@@ -946,14 +975,21 @@ mod tests {
         check_end_of_epoch_bank(433_295_999, 433_295_999, 1002).unwrap();
     }
 
+    // rejecting a skipped last slot would cost the epoch every collection, not just those slots' credits
     #[test]
-    fn a_bank_short_of_the_last_slot_of_its_epoch_is_rejected() {
-        let err = check_end_of_epoch_bank(433_000_000, 433_295_999, 1002)
-            .expect_err("a mid-epoch archive would mislabel every recorded vintage");
+    fn a_bank_short_of_the_last_slot_of_its_epoch_is_accepted() {
+        check_end_of_epoch_bank(433_295_997, 433_295_999, 1002).unwrap();
+        check_end_of_epoch_bank(433_000_000, 433_295_999, 1002).unwrap();
+    }
+
+    #[test]
+    fn a_bank_past_the_last_slot_of_its_epoch_is_rejected() {
+        let err = check_end_of_epoch_bank(433_296_000, 433_295_999, 1002)
+            .expect_err("a bank in the next epoch would mislabel every recorded vintage");
 
         assert!(
             err.to_string().contains("433295999"),
-            "the error must name the slot the snapshot should have been taken at: {err}"
+            "the error must name the last slot of the epoch it was handed: {err}"
         );
     }
 
@@ -975,8 +1011,7 @@ mod tests {
         }
     }
 
-    // ds-sam and validator-bonds read this file and settle real SOL against it,
-    // so a rename has to break the build here rather than a downstream consumer
+    // ds-sam and validator-bonds settle real SOL against this, so a rename must break here, not downstream
     #[test]
     fn the_validator_meta_json_shape_is_pinned() {
         assert_eq!(
@@ -1041,10 +1076,11 @@ mod tests {
             validator_rate: 0.04,
             validator_rewards: 42,
             validator_metas: vec![validator_meta()],
-            commission_vintage: VoteStateVintage::from_epoch_stakes(900),
-            collector_vintage: VoteStateVintage::from_live_stakes_cache(900),
+            commission_vintage: Some(VoteStateVintage::from_epoch_stakes(900)),
+            collector_vintage: Some(VoteStateVintage::from_live_stakes_cache(900)),
             commission_vintage_next_snapshot_fallbacks: 3,
             commission_vintage_live_state_fallbacks: 1,
+            leader_schedule_vote_accounts_absent_at_slot: 2,
             features: SnapshotFeatures {
                 block_revenue_custom_collector_active: true,
                 block_revenue_sharing_active: false,
@@ -1076,6 +1112,7 @@ mod tests {
                 },
                 "commission_vintage_next_snapshot_fallbacks": 3,
                 "commission_vintage_live_state_fallbacks": 1,
+                "leader_schedule_vote_accounts_absent_at_slot": 2,
                 "features": {
                     "block_revenue_custom_collector_active": true,
                     "block_revenue_sharing_active": false,
@@ -1097,8 +1134,7 @@ mod tests {
         assert_eq!(meta, deserialized);
     }
 
-    // A backfill or replay reads validators.json files written before SIMD-0185
-    // was published at all; every one of them has to keep deserializing.
+    // a backfill reads files written before SIMD-0185 was published, and every one must keep deserializing
     #[test]
     fn a_pre_simd_0185_validators_json_still_deserializes() {
         let collection: ValidatorMetaCollection = serde_json::from_str(
@@ -1125,8 +1161,14 @@ mod tests {
         .expect("an archived pre-SIMD-0185 validators.json must still be readable");
 
         assert_eq!(collection.epoch, 900);
+        assert_eq!(
+            (collection.commission_vintage, collection.collector_vintage),
+            (None, None),
+            "a file that recorded no vintage must not claim one"
+        );
         assert_eq!(collection.commission_vintage_next_snapshot_fallbacks, 0);
         assert_eq!(collection.commission_vintage_live_state_fallbacks, 0);
+        assert_eq!(collection.leader_schedule_vote_accounts_absent_at_slot, 0);
         assert_eq!(collection.features, SnapshotFeatures::default());
         let meta = &collection.validator_metas[0];
         assert_eq!(meta.commission, 7);

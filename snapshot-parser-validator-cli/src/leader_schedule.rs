@@ -13,9 +13,7 @@ use {
 #[allow(deprecated)]
 use solana_sdk::epoch_schedule::EpochSchedule;
 
-// A flat row per slot, with the vintage repeated on each, because the stakes ETL loads
-// this through `jq '.[]'` where nothing outside a row survives. See README for the
-// column contract this shape owes that pipeline.
+// One flat row per slot: the stakes ETL reads this through `jq '.[]'`, where nothing outside a row survives
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct LeaderScheduleEntry {
     pub epoch: Epoch,
@@ -23,16 +21,14 @@ pub struct LeaderScheduleEntry {
     pub slot: u64,
     #[serde(with = "pubkey_string_conversion")]
     pub vote_pubkey: Pubkey,
-    // identity carried by the same vote account the schedule drew vote_pubkey from, so it
-    // dates to vintage_captured_at_epoch and not to now
+    // read at vintage_captured_at_epoch off the same vote account as vote_pubkey, not as of now
     #[serde(with = "pubkey_string_conversion")]
     pub node_pubkey: Pubkey,
     pub vintage_epoch_stakes_key: Epoch,
     pub vintage_captured_at_epoch: Epoch,
 }
 
-// deposit_or_burn_fee looks the resulting vote_address up in the same epoch_stakes(epoch)
-// this draws from, so the schedule and the collector it feeds share one vintage
+// deposit_or_burn_fee resolves the collector in this same epoch_stakes(epoch), so both share one vintage
 fn leader_schedule_entries(
     epoch: Epoch,
     epoch_schedule: &EpochSchedule,
@@ -46,13 +42,11 @@ fn leader_schedule_entries(
         anyhow::bail!("No staked vote account in epoch stakes for epoch {epoch}");
     }
 
+    // the Option mirrors leader_schedule(epoch, bank), whose `?` is on the vote accounts resolved above
     let leader_schedule =
         leader_schedule_from_vote_accounts(epoch, epoch_schedule, epoch_vote_accounts)
-            .ok_or_else(|| anyhow::anyhow!("No leader schedule for epoch {epoch}"))?;
+            .expect("leader schedule should be computable from epoch stakes");
     let vintage = VoteStateVintage::from_epoch_stakes(epoch);
-    let vintage_epoch_stakes_key = vintage.epoch_stakes_key.ok_or_else(|| {
-        anyhow::anyhow!("Leader schedule vintage for epoch {epoch} names no epoch stakes snapshot")
-    })?;
     let first_slot_in_epoch = epoch_schedule.get_first_slot_in_epoch(epoch);
 
     let entries: Vec<LeaderScheduleEntry> = leader_schedule
@@ -63,13 +57,12 @@ fn leader_schedule_entries(
             slot: first_slot_in_epoch.saturating_add(slot_index as u64),
             vote_pubkey: slot_leader.vote_address,
             node_pubkey: slot_leader.id,
-            vintage_epoch_stakes_key,
+            vintage_epoch_stakes_key: epoch,
             vintage_captured_at_epoch: vintage.captured_at_epoch,
         })
         .collect();
 
-    // a slot count that is not a multiple of NUM_CONSECUTIVE_LEADER_SLOTS would leave
-    // LeaderSchedule::new silently truncating the last leader window
+    // LeaderSchedule::new truncates the last leader window when the count is not a multiple of it
     let slots_in_epoch = epoch_schedule.get_slots_in_epoch(epoch);
     if entries.len() as u64 != slots_in_epoch {
         anyhow::bail!(
@@ -111,13 +104,11 @@ pub fn generate_leader_schedule(bank: &Arc<Bank>) -> anyhow::Result<Vec<LeaderSc
 mod tests {
     use {
         super::*,
-        solana_sdk::account::AccountSharedData,
-        solana_vote::vote_account::VoteAccount,
+        crate::utils::vote_account_fixture::staked_vote_accounts,
         solana_vote_interface::state::{VoteStateV3, VoteStateVersions},
         std::collections::{HashMap, HashSet},
     };
 
-    const VOTE_PROGRAM_ID: &str = "Vote111111111111111111111111111111111111111";
     const EPOCH: Epoch = 1002;
     const VOTE_ACCOUNT: Pubkey = Pubkey::new_from_array([7u8; 32]);
     const NODE: Pubkey = Pubkey::new_from_array([17u8; 32]);
@@ -130,26 +121,13 @@ mod tests {
     }
 
     fn vote_accounts<const N: usize>(entries: [(Pubkey, Pubkey, u64); N]) -> VoteAccountsHashMap {
-        entries
-            .into_iter()
-            .map(|(vote_pubkey, node_pubkey, stake)| {
-                let vote_state_versions = VoteStateVersions::new_v3(VoteStateV3 {
-                    node_pubkey,
-                    ..VoteStateV3::default()
-                });
-                let account = AccountSharedData::create_from_existing_shared_data(
-                    1,
-                    Arc::new(bincode::serialize(&vote_state_versions).unwrap()),
-                    VOTE_PROGRAM_ID.parse().unwrap(),
-                    false,
-                    0,
-                );
-                (
-                    vote_pubkey,
-                    (stake, VoteAccount::try_from(account).unwrap()),
-                )
-            })
-            .collect()
+        staked_vote_accounts(entries.map(|(vote_pubkey, node_pubkey, stake)| {
+            let vote_state_versions = VoteStateVersions::new_v3(VoteStateV3 {
+                node_pubkey,
+                ..VoteStateV3::default()
+            });
+            (vote_pubkey, vote_state_versions, stake)
+        }))
     }
 
     fn two_validators() -> VoteAccountsHashMap {
@@ -191,8 +169,7 @@ mod tests {
         assert_eq!(entries.len(), 432_000);
     }
 
-    // get_slots_in_epoch is not constant while the schedule is warming up, so a
-    // hard-coded slots_per_epoch would be wrong for every early epoch.
+    // get_slots_in_epoch varies during warmup, so a hard-coded slots_per_epoch would be wrong there
     #[test]
     fn a_warming_up_epoch_schedule_gets_its_own_shorter_slot_count() {
         let epoch_schedule = EpochSchedule::new(432_000);
@@ -247,8 +224,7 @@ mod tests {
         );
     }
 
-    // Two vote accounts sharing one identity is what SIMD-0180 exists for, and
-    // the reason an identity-keyed schedule cannot be inverted downstream.
+    // SIMD-0180 exists for this, and it is why an identity-keyed schedule cannot be inverted
     #[test]
     fn two_vote_accounts_on_one_identity_stay_distinguishable_by_vote_pubkey() {
         let entries = leader_schedule_entries(
@@ -304,8 +280,7 @@ mod tests {
             .all(|entry| entry.vote_pubkey == VOTE_ACCOUNT));
     }
 
-    // The schedule is built from epoch_stakes(epoch), the state captured at the
-    // first slot of the epoch before it; the file must say so per row.
+    // epoch_stakes(epoch) is captured at the first slot of the epoch before it, and each row must say so
     #[test]
     fn every_row_records_the_epoch_stakes_snapshot_the_schedule_was_built_from() {
         let entries =
@@ -327,8 +302,7 @@ mod tests {
         );
     }
 
-    // The stakes ETL loads this file with `jq '.[]' -rc` straight into BigQuery,
-    // so a renamed field has to break the build here rather than a load
+    // a renamed field has to break here rather than in the ETL's `bq load`
     #[test]
     fn the_leader_schedule_entry_json_shape_is_pinned() {
         let entry = LeaderScheduleEntry {
@@ -357,10 +331,7 @@ mod tests {
         );
     }
 
-    // The stakes ETL runs `jq '.[]' -rc` over the file and feeds the result to
-    // `bq load --source_format=NEWLINE_DELIMITED_JSON`, so the document has to be
-    // one JSON array of flat objects: a collection-level header field or a
-    // grouped body would not survive that transform.
+    // `jq '.[]' -rc | bq load` needs one array of flat rows; a header field or grouped body would not survive it
     #[test]
     fn the_document_is_one_json_array_of_flat_objects() {
         let entries =
@@ -376,8 +347,7 @@ mod tests {
         assert!(rows.iter().all(|row| row
             .as_object()
             .is_some_and(|row| row["vote_pubkey"].is_string() && row["slot"].is_u64())));
-        // sorted, because serde_json keeps object keys in whatever order the
-        // preserve_order feature of the build leaves them in
+        // sorted, because the preserve_order feature decides serde_json's key order
         let columns = [
             "epoch",
             "node_pubkey",

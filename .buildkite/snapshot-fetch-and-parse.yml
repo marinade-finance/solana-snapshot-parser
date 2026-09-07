@@ -139,28 +139,21 @@ steps:
     - buildkite-agent artifact download --include-retried-jobs target/release/snapshot-parser-validator-cli .
     - chmod +x target/release/snapshot-parser-validator-cli
     - |
-      # The guard below reads "file exists" as "this run produced it", so no earlier attempt's may be left
+      # The annotation below reads "file exists" as "this run produced it", so no earlier attempt's may be left
       rm -f ./validators.json ./stakes.json ./leader-schedule.json ./jito-stake-meta-*.json
 
-      parse_status=0
+      # --require-leader-schedule false is what makes a missing schedule survivable; the exit code decides the rest
       ./target/release/snapshot-parser-validator-cli \
         --ledger-path "$$snapshot_dir" \
         --output-validator-meta-collection "./validators.json" \
         --output-stake-meta-collection "./stakes.json" \
         --output-jito-stake-meta "./jito-stake-meta-{hash}.json" \
         --output-leader-schedule "./leader-schedule.json" \
-        --require-jito-stake-meta true || parse_status=$$?
+        --require-jito-stake-meta true \
+        --require-leader-schedule false
 
-      # The parser joins every writer before exiting and writes each output atomically, so a present
-      # file is a complete one. Only a missing leader schedule is survivable - the stakes ETL then
-      # attributes block fees by validator identity - and it must not cost the epoch the three
-      # collections the ETL cannot do without; any other failure stays fatal.
-      if (( parse_status != 0 )); then
-        if [[ -f ./validators.json && -f ./stakes.json && ! -f ./leader-schedule.json ]]; then
-          echo "No leader schedule was produced! Block fees of this epoch stay attributed by validator identity, which SIMD-0180 no longer pays, until it is republished. See the parser output above." | buildkite-agent annotate --style warning --context "leader-schedule"
-        else
-          exit $$parse_status
-        fi
+      if [[ ! -f ./leader-schedule.json ]]; then
+        echo "No leader schedule was produced! Block fees of this epoch stay attributed by validator identity, which SIMD-0180 no longer pays, until it is republished. See the parser output above." | buildkite-agent annotate --style warning --context "leader-schedule"
       fi
     - |
       cp ./validators.json "$$snapshot_dir/validators.json"
@@ -199,8 +192,7 @@ steps:
     - gcloud storage cp "$$snapshot_dir/validators.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
     - gcloud storage cp "$$snapshot_dir/stakes.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
     - gcloud storage cp "$$snapshot_dir/$$jito_stake_meta_name" "$GCLOUD_SNAPSHOTS/$$epoch/$$jito_stake_meta_name"
-    # Uploaded last and only when it exists: the stakes ETL reads its absence as "attribute block
-    # fees by identity" and carries on, so it must never stand between the other three and the bucket
+    # Uploaded last, so it never stands between the other three and the bucket
     - |
       if [[ -f "$$snapshot_dir/leader-schedule.json" ]]; then
         gcloud storage cp "$$snapshot_dir/leader-schedule.json" "$GCLOUD_SNAPSHOTS/$$epoch/leader-schedule.json"
