@@ -30,5 +30,5 @@ solana-vote = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
-# constructs VoteStateV3/V4 fixtures for the vote-state-view tests only
+# constructs VoteStateV3/V4 fixtures for tests only
 solana-vote-interface = { workspace = true }

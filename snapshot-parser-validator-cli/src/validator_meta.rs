@@ -93,7 +93,7 @@ pub struct VoteStateVintage {
 }
 
 impl VoteStateVintage {
-    fn from_epoch_stakes(epoch_stakes_key: Epoch) -> Self {
+    pub(crate) fn from_epoch_stakes(epoch_stakes_key: Epoch) -> Self {
         Self {
             epoch_stakes_key: Some(epoch_stakes_key),
             captured_at_epoch: epoch_stakes_key.saturating_sub(1),
@@ -427,7 +427,11 @@ fn fetch_vote_account_metas<'a>(
 /// `collector_vintage` and `commission_vintage` only describe a bank frozen at
 /// the last slot of its epoch; a mid-epoch archive would silently mislabel every
 /// field read out of the live stakes cache.
-fn check_end_of_epoch_bank(slot: u64, last_slot_in_epoch: u64, epoch: Epoch) -> anyhow::Result<()> {
+pub(crate) fn check_end_of_epoch_bank(
+    slot: u64,
+    last_slot_in_epoch: u64,
+    epoch: Epoch,
+) -> anyhow::Result<()> {
     if slot != last_slot_in_epoch {
         anyhow::bail!(
             "Bank is at slot {slot}, not the last slot {last_slot_in_epoch} of epoch {epoch}; the vote state vintages this collection records would not hold. Parse the end-of-epoch snapshot instead."

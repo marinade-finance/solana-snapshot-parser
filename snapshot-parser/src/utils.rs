@@ -46,6 +46,17 @@ pub fn write_to_json_file<T: Serialize>(data: &T, out_path: &str) -> anyhow::Res
     })
 }
 
+/// The same JSON document `write_to_json_file` produces, minus the indentation,
+/// which is a fifth of the bytes of a file of many short rows that nothing reads
+/// by eye.
+pub fn write_to_compact_json_file<T: Serialize>(data: &T, out_path: &str) -> anyhow::Result<()> {
+    write_atomic(out_path, |writer| {
+        serde_json::to_writer(writer, data)?;
+
+        Ok(())
+    })
+}
+
 pub fn read_from_json_file<P: AsRef<Path>, T: DeserializeOwned>(in_path: &P) -> anyhow::Result<T> {
     let file = File::open(in_path)?;
     let reader = BufReader::new(file);
@@ -94,6 +105,23 @@ mod tests {
             fs::read_to_string(out.path()).unwrap(),
             serde_json::to_string_pretty(&data).unwrap()
         );
+    }
+
+    #[test]
+    fn the_compact_writer_emits_the_same_document_without_the_indentation() {
+        let data = json!([{"epoch": 1002, "slot": 433295999, "vote_pubkey": "abc"}]);
+        let out = OutDir::new("compact");
+        write_to_compact_json_file(&data, &out.path()).unwrap();
+
+        let written = fs::read_to_string(out.path()).unwrap();
+        assert_eq!(written, serde_json::to_string(&data).unwrap());
+        assert!(!written.contains('\n'), "no newlines to indent with");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&written).unwrap(),
+            data,
+            "compact and pretty have to be the same JSON document"
+        );
+        assert!(!Path::new(&format!("{}.tmp", out.path())).exists());
     }
 
     #[test]

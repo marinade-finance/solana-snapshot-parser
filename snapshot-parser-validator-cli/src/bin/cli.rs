@@ -1,11 +1,11 @@
 use env_logger::{Builder, Env};
 use log::LevelFilter;
 use snapshot_parser::stake_meta;
-use snapshot_parser::utils::write_to_json_file;
+use snapshot_parser::utils::{write_to_compact_json_file, write_to_json_file};
 use snapshot_parser_validator_cli::jito_mev::JITO_PROGRAM;
 use snapshot_parser_validator_cli::jito_stake_meta::JITO_TIP_PAYMENT_PROGRAM;
 use snapshot_parser_validator_cli::scanned_accounts::scan_required_accounts;
-use snapshot_parser_validator_cli::{jito_stake_meta, validator_meta};
+use snapshot_parser_validator_cli::{jito_stake_meta, leader_schedule, validator_meta};
 use solana_program::pubkey::Pubkey;
 use std::thread::spawn;
 use {
@@ -34,6 +34,10 @@ struct Args {
     /// Path to write JSON file to for the Jito-format stake metas; a literal {hash} in it is replaced by the Jito program hash (e.g., jito-stake-meta-{hash}.json)
     #[arg(long, env)]
     output_jito_stake_meta: Option<String>,
+
+    /// Path to write JSON file to for the vote-account-keyed leader schedule of the parsed epoch (e.g., leader-schedule.json)
+    #[arg(long, env)]
+    output_leader_schedule: Option<String>,
 
     /// Cross-check the single-pass account scan against get_program_accounts; costs a scan per owner
     #[arg(long, env, default_value_t = false)]
@@ -176,6 +180,23 @@ fn main() -> anyhow::Result<()> {
         })
     });
 
+    let leader_schedule_handle = args.output_leader_schedule.map(|output_path| {
+        let bank = bank.clone();
+        spawn(move || {
+            info!("Creating leader schedule...");
+
+            let call = || -> anyhow::Result<()> {
+                let leader_schedule = leader_schedule::generate_leader_schedule(&bank)?;
+                // One row per slot of the epoch, so compact rather than pretty
+                write_to_compact_json_file(&leader_schedule, &output_path)?;
+                info!("Leader schedule finished, written to {output_path}.");
+                Ok(())
+            };
+
+            call()
+        })
+    });
+
     // Every handle must be joined before returning, otherwise process exit kills a thread mid-write
     let mut failure = None;
     for handle in [
@@ -208,6 +229,21 @@ fn main() -> anyhow::Result<()> {
             if require_jito_stake_meta {
                 failure = failure.or(Some(outcome));
             }
+        }
+    }
+
+    if let Some(handle) = leader_schedule_handle {
+        let outcome = match handle.join() {
+            Ok(Ok(())) => {
+                info!("Leader schedule completed successfully.");
+                None
+            }
+            Ok(Err(err)) => Some(format!("Error in leader schedule thread: {err:?}")),
+            Err(err) => Some(format!("Leader schedule thread panicked: {err:?}")),
+        };
+        if let Some(outcome) = outcome {
+            error!("{outcome}");
+            failure = failure.or(Some(outcome));
         }
     }
 
@@ -354,6 +390,47 @@ mod tests {
         .expect("argv must parse");
         args.validate().expect("argv must be valid");
         assert!(!args.require_jito_stake_meta);
+    }
+
+    // Neither Parse step passes it yet, and an omitted output has to leave the
+    // parser doing exactly the work it does today.
+    #[test]
+    fn an_omitted_leader_schedule_output_stays_unset() {
+        let args = Args::try_parse_from([
+            "snapshot-parser-validator-cli",
+            "--ledger-path",
+            ".",
+            "--output-validator-meta-collection",
+            "./validators.json",
+            "--output-stake-meta-collection",
+            "./stakes.json",
+        ])
+        .expect("argv without the leader schedule must parse");
+        args.validate().expect("argv must be valid");
+
+        assert_eq!(args.output_leader_schedule, None);
+    }
+
+    #[test]
+    fn the_leader_schedule_output_is_taken_as_given() {
+        let args = Args::try_parse_from([
+            "snapshot-parser-validator-cli",
+            "--ledger-path",
+            ".",
+            "--output-validator-meta-collection",
+            "./validators.json",
+            "--output-stake-meta-collection",
+            "./stakes.json",
+            "--output-leader-schedule",
+            "./leader-schedule.json",
+        ])
+        .expect("argv with the leader schedule must parse");
+        args.validate().expect("argv must be valid");
+
+        assert_eq!(
+            args.output_leader_schedule.as_deref(),
+            Some("./leader-schedule.json")
+        );
     }
 
     #[test]
