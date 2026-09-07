@@ -392,8 +392,8 @@ mod tests {
         assert!(!args.require_jito_stake_meta);
     }
 
-    // Neither Parse step passes it yet, and an omitted output has to leave the
-    // parser doing exactly the work it does today.
+    // The testnet Parse step passes no leader schedule output, and an omitted
+    // output has to leave the parser doing exactly the work it does today.
     #[test]
     fn an_omitted_leader_schedule_output_stays_unset() {
         let args = Args::try_parse_from([
@@ -504,6 +504,8 @@ mod tests {
             "./stakes.json",
             "--output-jito-stake-meta",
             "./jito-stake-meta-{hash}.json",
+            "--output-leader-schedule",
+            "./leader-schedule.json",
             "--require-jito-stake-meta",
             "true",
         ])
@@ -513,6 +515,11 @@ mod tests {
 
         assert!(args.require_jito_stake_meta);
         assert!(args.require_priority_fee_data);
+        assert_eq!(
+            args.output_leader_schedule.as_deref(),
+            Some("./leader-schedule.json"),
+            "the Upload step publishes this name as <bucket>/<epoch>/leader-schedule.json, which is the object the stakes ETL fetches"
+        );
         let out = resolve_output_path(&args.output_jito_stake_meta.unwrap(), HASH);
         assert_eq!(out, "./jito-stake-meta-2426260379.1775319386.json");
         assert!(
