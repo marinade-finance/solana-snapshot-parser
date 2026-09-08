@@ -71,7 +71,10 @@ fn update_mev_commission(
         validator_commission_bps: jito_commission,
         validator_vote_account: vote_account,
     } = read_jito_commission_and_epoch(account_pubkey, account, epoch_byte_index)?;
-    assert_eq!(epoch, epoch_created_at);
+    anyhow::ensure!(
+        epoch == epoch_created_at,
+        "Jito account {account_pubkey} re-read epoch {epoch_created_at} at the offset taken for epoch {epoch}"
+    );
     jito_mev_metas.push(JitoMevMeta {
         vote_account,
         mev_commission: jito_commission,
