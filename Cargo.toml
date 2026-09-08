@@ -21,6 +21,9 @@ incremental = false
 opt-level = 3
 
 [workspace.dependencies]
+# already in Cargo.lock as a transitive dependency of solana-runtime at the same
+# pinned version; declared here so the feature-flag reads are testable
+agave-feature-set = "=4.2.1"
 ahash = "0.8.12"
 borsh = { version = "1", features = ["derive"] }
 anyhow = "1.0.102"
@@ -50,4 +53,6 @@ solana-runtime = "=4.2.1"
 solana-sdk = "=4.0.1"
 solana-accounts-db = "=4.2.1"
 solana-stake-interface = { version = "=4.3.0", features = ["serde", "sysvar"] }
+solana-vote = { version = "=4.2.1", features = ["agave-unstable-api"] }
+solana-vote-interface = { version = "=6.0.3", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }

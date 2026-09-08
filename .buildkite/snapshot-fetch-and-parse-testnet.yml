@@ -151,6 +151,9 @@ steps:
     - buildkite-agent artifact download --include-retried-jobs target/release/snapshot-parser-validator-cli .
     - chmod +x target/release/snapshot-parser-validator-cli
     - |
+      # The annotation below reads "file exists" as "this run produced it", so no earlier attempt's may be left
+      rm -f ./validators.json ./stakes.json ./jito-stake-meta.json
+
       ./target/release/snapshot-parser-validator-cli \
         --ledger-path "$$snapshot_dir" \
         --output-validator-meta-collection "./validators.json" \
@@ -163,6 +166,7 @@ steps:
     - |
       cp ./validators.json "$$snapshot_dir/validators.json"
       cp ./stakes.json "$$snapshot_dir/stakes.json"
+      rm -f "$$snapshot_dir/jito-stake-meta.json"
       if [[ -f ./jito-stake-meta.json ]]; then
         cp ./jito-stake-meta.json "$$snapshot_dir/jito-stake-meta.json"
       else

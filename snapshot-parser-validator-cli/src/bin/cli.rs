@@ -1,13 +1,13 @@
 use env_logger::{Builder, Env};
 use log::LevelFilter;
 use snapshot_parser::stake_meta;
-use snapshot_parser::utils::write_to_json_file;
+use snapshot_parser::utils::{write_to_compact_json_file, write_to_json_file};
 use snapshot_parser_validator_cli::jito_mev::JITO_PROGRAM;
 use snapshot_parser_validator_cli::jito_stake_meta::JITO_TIP_PAYMENT_PROGRAM;
 use snapshot_parser_validator_cli::scanned_accounts::scan_required_accounts;
-use snapshot_parser_validator_cli::{jito_stake_meta, validator_meta};
+use snapshot_parser_validator_cli::{jito_stake_meta, leader_schedule, validator_meta};
 use solana_program::pubkey::Pubkey;
-use std::thread::spawn;
+use std::thread::{spawn, JoinHandle};
 use {
     clap::Parser,
     log::{error, info},
@@ -35,6 +35,10 @@ struct Args {
     #[arg(long, env)]
     output_jito_stake_meta: Option<String>,
 
+    /// Path to write JSON file to for the vote-account-keyed leader schedule of the parsed epoch (e.g., leader-schedule.json)
+    #[arg(long, env)]
+    output_leader_schedule: Option<String>,
+
     /// Cross-check the single-pass account scan against get_program_accounts; costs a scan per owner
     #[arg(long, env, default_value_t = false)]
     verify_account_scan: bool,
@@ -55,12 +59,19 @@ struct Args {
     /// Treat a failed Jito stake meta collection as fatal; requires --output-jito-stake-meta
     #[arg(long, env, action = clap::ArgAction::Set, default_value_t = false)]
     require_jito_stake_meta: bool,
+
+    /// Treat a failed leader schedule as fatal; requires --output-leader-schedule
+    #[arg(long, env, action = clap::ArgAction::Set, default_value_t = false)]
+    require_leader_schedule: bool,
 }
 
 impl Args {
     fn validate(&self) -> anyhow::Result<()> {
         if self.require_jito_stake_meta && self.output_jito_stake_meta.is_none() {
             anyhow::bail!("--require-jito-stake-meta true needs --output-jito-stake-meta, otherwise the required collection is never produced");
+        }
+        if self.require_leader_schedule && self.output_leader_schedule.is_none() {
+            anyhow::bail!("--require-leader-schedule true needs --output-leader-schedule, otherwise the required collection is never produced");
         }
 
         Ok(())
@@ -71,6 +82,17 @@ const JITO_PROGRAM_HASH_PLACEHOLDER: &str = "{hash}";
 
 fn resolve_output_path(output_jito_stake_meta: &str, jito_program_hash: &str) -> String {
     output_jito_stake_meta.replace(JITO_PROGRAM_HASH_PLACEHOLDER, jito_program_hash)
+}
+
+fn join_optional(handle: Option<JoinHandle<anyhow::Result<()>>>, name: &str) -> Option<String> {
+    match handle?.join() {
+        Ok(Ok(())) => {
+            info!("{name} completed successfully.");
+            None
+        }
+        Ok(Err(err)) => Some(format!("Error in {name} thread: {err:?}")),
+        Err(err) => Some(format!("{name} thread panicked: {err:?}")),
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -143,6 +165,7 @@ fn main() -> anyhow::Result<()> {
     let tip_distribution_program = args.tip_distribution_program;
     let tip_payment_program = args.tip_payment_program;
     let require_jito_stake_meta = args.require_jito_stake_meta;
+    let require_leader_schedule = args.require_leader_schedule;
     let jito_stake_meta_collection_handle = args.output_jito_stake_meta.map(|output_path| {
         let bank = bank.clone();
         let stake_accounts = scanned_accounts.stake.clone();
@@ -176,6 +199,23 @@ fn main() -> anyhow::Result<()> {
         })
     });
 
+    let leader_schedule_handle = args.output_leader_schedule.map(|output_path| {
+        let bank = bank.clone();
+        spawn(move || {
+            info!("Creating leader schedule...");
+
+            let call = || -> anyhow::Result<()> {
+                let leader_schedule = leader_schedule::generate_leader_schedule(&bank)?;
+                // One row per slot of the epoch, so compact rather than pretty
+                write_to_compact_json_file(&leader_schedule, &output_path)?;
+                info!("Leader schedule finished, written to {output_path}.");
+                Ok(())
+            };
+
+            call()
+        })
+    });
+
     // Every handle must be joined before returning, otherwise process exit kills a thread mid-write
     let mut failure = None;
     for handle in [
@@ -194,20 +234,17 @@ fn main() -> anyhow::Result<()> {
         failure = failure.or(Some(outcome));
     }
 
-    if let Some(handle) = jito_stake_meta_collection_handle {
-        let outcome = match handle.join() {
-            Ok(Ok(())) => {
-                info!("Jito stake meta collection completed successfully.");
-                None
-            }
-            Ok(Err(err)) => Some(format!("Error in Jito stake meta thread: {err:?}")),
-            Err(err) => Some(format!("Jito stake meta thread panicked: {err:?}")),
-        };
-        if let Some(outcome) = outcome {
-            error!("{outcome}");
-            if require_jito_stake_meta {
-                failure = failure.or(Some(outcome));
-            }
+    if let Some(outcome) = join_optional(jito_stake_meta_collection_handle, "Jito stake meta") {
+        error!("{outcome}");
+        if require_jito_stake_meta {
+            failure = failure.or(Some(outcome));
+        }
+    }
+
+    if let Some(outcome) = join_optional(leader_schedule_handle, "Leader schedule") {
+        error!("{outcome}");
+        if require_leader_schedule {
+            failure = failure.or(Some(outcome));
         }
     }
 
@@ -354,6 +391,33 @@ mod tests {
         .expect("argv must parse");
         args.validate().expect("argv must be valid");
         assert!(!args.require_jito_stake_meta);
+        // the testnet Parse step passes no leader schedule output
+        assert_eq!(args.output_leader_schedule, None);
+        assert!(!args.require_leader_schedule);
+    }
+
+    #[test]
+    fn require_leader_schedule_without_an_output_is_rejected() {
+        let args = Args::try_parse_from([
+            "snapshot-parser-validator-cli",
+            "--ledger-path",
+            ".",
+            "--output-validator-meta-collection",
+            "./validators.json",
+            "--output-stake-meta-collection",
+            "./stakes.json",
+            "--require-leader-schedule",
+            "true",
+        ])
+        .expect("argv parses, the combination is rejected by validation");
+
+        let err = args
+            .validate()
+            .expect_err("--require-leader-schedule true must not be a silent no-op");
+        assert!(
+            err.to_string().contains("--output-leader-schedule"),
+            "the error must name the missing flag: {err}"
+        );
     }
 
     #[test]
@@ -427,8 +491,12 @@ mod tests {
             "./stakes.json",
             "--output-jito-stake-meta",
             "./jito-stake-meta-{hash}.json",
+            "--output-leader-schedule",
+            "./leader-schedule.json",
             "--require-jito-stake-meta",
             "true",
+            "--require-leader-schedule",
+            "false",
         ])
         .expect("mainnet Parse step argv must parse");
         args.validate()
@@ -436,6 +504,15 @@ mod tests {
 
         assert!(args.require_jito_stake_meta);
         assert!(args.require_priority_fee_data);
+        assert!(
+            !args.require_leader_schedule,
+            "a missing leader schedule must not cost the epoch the collections the ETL cannot do without"
+        );
+        assert_eq!(
+            args.output_leader_schedule.as_deref(),
+            Some("./leader-schedule.json"),
+            "the Upload step publishes this name as <bucket>/<epoch>/leader-schedule.json, which is the object the stakes ETL fetches"
+        );
         let out = resolve_output_path(&args.output_jito_stake_meta.unwrap(), HASH);
         assert_eq!(out, "./jito-stake-meta-2426260379.1775319386.json");
         assert!(

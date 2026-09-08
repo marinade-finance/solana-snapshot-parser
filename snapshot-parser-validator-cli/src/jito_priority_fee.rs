@@ -69,7 +69,11 @@ fn update_jito_priority_fee_metas(
     let (epoch_created_at, epoch_byte_index) = get_epoch_created_at(account)?;
     if epoch_created_at == epoch {
         let commission_data = read_jito_commission_and_epoch(pubkey, account, epoch_byte_index)?;
-        assert_eq!(epoch, commission_data.epoch_created_at);
+        anyhow::ensure!(
+            epoch == commission_data.epoch_created_at,
+            "Jito account {pubkey} re-read epoch {} at the offset taken for epoch {epoch}",
+            commission_data.epoch_created_at
+        );
         let total_lamports_transferred =
             read_priority_fee_total_lamports_transferred(pubkey, account, epoch_byte_index)?;
         jito_priority_fee_metas.push(JitoPriorityFeeMeta {

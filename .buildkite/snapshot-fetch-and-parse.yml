@@ -133,17 +133,28 @@ steps:
         - ./validators.json
         - ./stakes.json
         - ./jito-stake-meta-*.json
+        - ./leader-schedule.json
     commands:
     - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
     - buildkite-agent artifact download --include-retried-jobs target/release/snapshot-parser-validator-cli .
     - chmod +x target/release/snapshot-parser-validator-cli
     - |
+      # The annotation below reads "file exists" as "this run produced it", so no earlier attempt's may be left
+      rm -f ./validators.json ./stakes.json ./leader-schedule.json ./jito-stake-meta-*.json
+
+      # --require-leader-schedule false is what makes a missing schedule survivable; the exit code decides the rest
       ./target/release/snapshot-parser-validator-cli \
         --ledger-path "$$snapshot_dir" \
         --output-validator-meta-collection "./validators.json" \
         --output-stake-meta-collection "./stakes.json" \
         --output-jito-stake-meta "./jito-stake-meta-{hash}.json" \
-        --require-jito-stake-meta true
+        --output-leader-schedule "./leader-schedule.json" \
+        --require-jito-stake-meta true \
+        --require-leader-schedule false
+
+      if [[ ! -f ./leader-schedule.json ]]; then
+        echo "No leader schedule was produced! Block fees of this epoch stay attributed by validator identity, which SIMD-0180 no longer pays, until it is republished. See the parser output above." | buildkite-agent annotate --style warning --context "leader-schedule"
+      fi
     - |
       cp ./validators.json "$$snapshot_dir/validators.json"
       cp ./stakes.json "$$snapshot_dir/stakes.json"
@@ -153,6 +164,10 @@ steps:
       fi
       rm -f "$$snapshot_dir"/jito-stake-meta-*.json
       cp "./$$jito_stake_meta_name" "$$snapshot_dir/$$jito_stake_meta_name"
+      rm -f "$$snapshot_dir/leader-schedule.json"
+      if [[ -f ./leader-schedule.json ]]; then
+        cp ./leader-schedule.json "$$snapshot_dir/leader-schedule.json"
+      fi
 
   - wait: ~
 
@@ -178,6 +193,13 @@ steps:
     - gcloud storage cp "$$snapshot_dir/validators.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
     - gcloud storage cp "$$snapshot_dir/stakes.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
     - gcloud storage cp "$$snapshot_dir/$$jito_stake_meta_name" "$GCLOUD_SNAPSHOTS/$$epoch/$$jito_stake_meta_name"
+    # Uploaded last, so it never stands between the other three and the bucket
+    - |
+      if [[ -f "$$snapshot_dir/leader-schedule.json" ]]; then
+        gcloud storage cp "$$snapshot_dir/leader-schedule.json" "$GCLOUD_SNAPSHOTS/$$epoch/leader-schedule.json"
+      else
+        echo "No leader schedule to upload for epoch $$epoch! Block fees of this epoch stay attributed by validator identity until it is republished." | buildkite-agent annotate --style warning --context "leader-schedule"
+      fi
 
   - wait: ~
 

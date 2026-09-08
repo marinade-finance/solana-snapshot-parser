@@ -5182,6 +5182,7 @@ dependencies = [
 name = "snapshot-parser-validator-cli"
 version = "0.0.0"
 dependencies = [
+ "agave-feature-set",
  "ahash 0.8.12",
  "anyhow",
  "bincode",
@@ -5198,6 +5199,8 @@ dependencies = [
  "solana-runtime",
  "solana-sdk",
  "solana-stake-interface",
+ "solana-vote",
+ "solana-vote-interface",
 ]
 
 [[package]]
