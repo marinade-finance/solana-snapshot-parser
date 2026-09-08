@@ -164,6 +164,7 @@ steps:
       fi
       rm -f "$$snapshot_dir"/jito-stake-meta-*.json
       cp "./$$jito_stake_meta_name" "$$snapshot_dir/$$jito_stake_meta_name"
+      rm -f "$$snapshot_dir/leader-schedule.json"
       if [[ -f ./leader-schedule.json ]]; then
         cp ./leader-schedule.json "$$snapshot_dir/leader-schedule.json"
       fi

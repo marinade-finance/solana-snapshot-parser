@@ -45,7 +45,7 @@ fn leader_schedule_entries(
     // the Option mirrors leader_schedule(epoch, bank), whose `?` is on the vote accounts resolved above
     let leader_schedule =
         leader_schedule_from_vote_accounts(epoch, epoch_schedule, epoch_vote_accounts)
-            .expect("leader schedule should be computable from epoch stakes");
+            .ok_or_else(|| anyhow::anyhow!("No leader schedule for epoch {epoch}"))?;
     let vintage = VoteStateVintage::from_epoch_stakes(epoch);
     let first_slot_in_epoch = epoch_schedule.get_first_slot_in_epoch(epoch);
 
