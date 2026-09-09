@@ -38,11 +38,14 @@ itself reads it from, and publishes the vintage beside it:
 | `inflation_rewards_commission_bps` | `epoch_stakes(E)`, falling back to `epoch_stakes(E+1)` then to the state at `slot`, published as `commission_vintage` | `snapshot_epoch_vote_accounts.or_else(rewarded_epoch_vote_accounts)` in `get_cached_vote_accounts` |
 | `block_revenue_collector`, `block_revenue_commission_bps` | `epoch_stakes(E)` only, no fallback | `deposit_or_burn_fee`, which resolves the leader there and expects it to be present |
 
-Two counters say how many vote accounts missed the commission vintage:
+Two counters say how many **staked** vote accounts missed the commission vintage:
 `commission_vintage_next_snapshot_fallbacks` were answered by
 `epoch_stakes(E+1)`, `commission_vintage_live_state_fallbacks` by neither
 snapshot. Both are 0 when `commission_vintage` is the live stakes cache, since
-then no snapshot was named to fall back from. Both vintages are `null` in a
+then no snapshot was named to fall back from. The staked scope is what makes them
+worth reading: once SIMD-0357 is active both snapshots hold only accounts that
+were staked and admitted when captured, so every unstaked account misses them by
+construction - thousands per epoch, whose commission the payout applies to nothing. Both vintages are `null` in a
 `validators.json` written before they were published - absence means the file
 recorded none, not that the live stakes cache was used.
 
@@ -56,14 +59,16 @@ has that many vote accounts with no right-hand side, and the parser logs a warni
 naming the count.
 
 `bank.vote_accounts()` is unfiltered while agave pays only the vote accounts
-surviving SIMD-0357 filtering. `inflation_rewards_admitted` is how
-`bank.get_top_epoch_stakes()` ruled at `slot` and
-`inflation_rewards_unadmitted_at_slot` counts only the staked refusals - an
-unstaked row reads `false` for holding no stake. It is not agave's verdict:
-agave re-runs the filter on the E+1 activated stakes, where either stake-valued
-criterion can flip it. `null` means inactive at `slot`, which does not rule out
-activation on that E+1 bank, and is also what a pre-field `validators.json`
-records.
+surviving SIMD-0357 filtering, so `inflation_rewards_admitted` reports how
+`bank.get_top_epoch_stakes()` ruled at `slot`. `false` is narrower than that
+ruling: agave re-runs the filter on the E+1 activated stakes, and of its three
+criteria only the BLS key is read off the account state this bank already holds,
+so a refusal is published only where that key is missing.
+`null` covers the rest - the filter inactive at `slot`, or a refusal only the
+E+1 stakes decide (no stake here, or the 2000-account cutoff) - and is also what
+a pre-field `validators.json` records.
+`inflation_rewards_unadmitted_at_slot` counts the staked `false` rows, the ones
+whose commission a consumer could otherwise read as burned.
 
 `features` publishes the agave flags these vintages depend on. The two block
 revenue flags are independent and neither stands in for the other:

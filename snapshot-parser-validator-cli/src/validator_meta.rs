@@ -11,7 +11,10 @@ use {
     solana_runtime::bank::Bank,
     solana_sdk::{account::AccountSharedData, epoch_info::EpochInfo},
     solana_stake_interface::stake_history::Epoch,
-    solana_vote::{vote_account::VoteAccountsHashMap, vote_state_view::VoteStateView},
+    solana_vote::{
+        vote_account::{VoteAccount, VoteAccountsHashMap},
+        vote_state_view::VoteStateView,
+    },
     std::{fmt::Debug, sync::Arc},
 };
 
@@ -44,7 +47,7 @@ pub struct ValidatorMeta {
     // the pot that same feature's payout divides by stake share
     #[serde(default)]
     pub pending_delegator_rewards: Option<u64>,
-    // agave re-runs the filter on the E+1 stakes, so this can rule the other way there; false also covers an unstaked row
+    // false is a refusal the E+1 distribution bank must repeat, null one only its stake vintage decides
     #[serde(default)]
     pub inflation_rewards_admitted: Option<bool>,
 }
@@ -147,10 +150,10 @@ pub struct ValidatorMetaCollection {
     pub commission_vintage: Option<VoteStateVintage>,
     #[serde(default)]
     pub collector_vintage: Option<VoteStateVintage>,
-    // absent from the commission_vintage snapshot, so agave and this collection both read epoch_stakes(epoch + 1)
+    // staked rows absent from the commission_vintage snapshot, so agave and this collection both read epoch_stakes(epoch + 1)
     #[serde(default)]
     pub commission_vintage_next_snapshot_fallbacks: usize,
-    // absent from that snapshot and the next, leaving the state at slot, which agave falls back to as well
+    // staked rows absent from that snapshot and the next, leaving the state at slot, which agave falls back to as well
     #[serde(default)]
     pub commission_vintage_live_state_fallbacks: usize,
     // staked schedule-vintage members with no row here, whose vote_pubkey leader-schedule.json cannot join
@@ -291,10 +294,31 @@ impl<'a> CommissionVintageSource<'a> {
     }
 }
 
+// agave re-runs clone_and_filter_for_vat on the E+1 activated stakes; refresh_vote_accounts hands
+// it these same vote accounts with only the stake replaced, so the BLS key is the one criterion of
+// the three that reads what this bank already holds. Stake, the 2000-account cutoff and the balance
+// threshold are all the distribution bank's own, the last because a boundary feature activation moves it
+struct AdmissionFilter<'a> {
+    admitted: &'a VoteAccountsHashMap,
+}
+
+impl AdmissionFilter<'_> {
+    fn verdict(&self, vote_account: &Pubkey, account: &VoteAccount) -> Option<bool> {
+        if self.admitted.contains_key(vote_account) {
+            return Some(true);
+        }
+        account
+            .vote_state_view()
+            .bls_pubkey_compressed()
+            .is_none()
+            .then_some(false)
+    }
+}
+
 fn fetch_vote_account_metas<'a>(
     live_vote_accounts: &VoteAccountsHashMap,
     epoch_vote_accounts: impl Fn(Epoch) -> Option<&'a VoteAccountsHashMap>,
-    admitted_vote_accounts: Option<&VoteAccountsHashMap>,
+    admission: Option<AdmissionFilter<'_>>,
     epoch: Epoch,
 ) -> VoteAccountMetaCollection {
     let commission_source = CommissionVintageSource::new(epoch_vote_accounts, epoch);
@@ -317,16 +341,18 @@ fn fetch_vote_account_metas<'a>(
             })
             .unwrap_or(0);
 
+        // both counters are of the staked population: SIMD-0357 filtering keeps every unstaked
+        // account out of either snapshot, and the payout applies no commission of theirs anyway
         let commission = match commission_source.commission_view(pubkey) {
             Some((view, epoch_stakes_key)) => {
-                if commission_vintage.epoch_stakes_key != Some(epoch_stakes_key) {
+                if *stake > 0 && commission_vintage.epoch_stakes_key != Some(epoch_stakes_key) {
                     commission_vintage_next_snapshot_fallbacks += 1;
                 }
                 inflation_rewards_commission(view)
             }
             None => {
                 // no snapshot vintage means every account is read at slot, which is not a fallback
-                if commission_vintage.epoch_stakes_key.is_some() {
+                if *stake > 0 && commission_vintage.epoch_stakes_key.is_some() {
                     commission_vintage_live_state_fallbacks += 1;
                 }
                 inflation_rewards_commission(vote_state_view)
@@ -336,9 +362,10 @@ fn fetch_vote_account_metas<'a>(
         let block_revenue_fields = commission_source
             .block_revenue_view(pubkey)
             .and_then(v4_block_revenue_fields);
-        let inflation_rewards_admitted =
-            admitted_vote_accounts.map(|admitted| admitted.contains_key(pubkey));
-        // an unstaked account is refused for holding no stake, which says nothing about its ticket
+        let inflation_rewards_admitted = admission
+            .as_ref()
+            .and_then(|admission| admission.verdict(pubkey, vote_account));
+        // an unstaked refusal moves no number downstream: no points, no rows, no commission to burn
         if inflation_rewards_admitted == Some(false) && *stake > 0 {
             inflation_rewards_unadmitted_at_slot += 1;
         }
@@ -426,7 +453,6 @@ pub fn generate_validator_collection(
 
     let live_vote_accounts = bank.vote_accounts();
     let features = SnapshotFeatures::from_feature_snapshot(bank.feature_set.snapshot());
-    // agave filters the E+1 activated stakes instead, so both stake-valued criteria can rule the other way there
     let admitted_stakes = features
         .admission_filter_active()
         .then(|| bank.get_top_epoch_stakes());
@@ -440,9 +466,9 @@ pub fn generate_validator_collection(
     } = fetch_vote_account_metas(
         &live_vote_accounts,
         |epoch| bank.epoch_vote_accounts(epoch),
-        admitted_stakes
-            .as_ref()
-            .map(|stakes| stakes.vote_accounts().as_ref()),
+        admitted_stakes.as_ref().map(|stakes| AdmissionFilter {
+            admitted: stakes.vote_accounts().as_ref(),
+        }),
         epoch,
     );
     let collector_vintage = VoteStateVintage::from_live_stakes_cache(epoch);
@@ -553,7 +579,7 @@ pub fn generate_validator_collection(
     }
     if inflation_rewards_unadmitted_at_slot > 0 {
         warn!(
-            "{} staked vote accounts fail SIMD-0357 admission at this slot (ticket balance, BLS key, or the 2000-account stake cutoff); agave likely pays them and their delegators nothing, so a consumer reading their commission as burned invents it",
+            "{} staked vote accounts carry no BLS key, which SIMD-0357 admission needs and the E+1 distribution bank reads off this same state; agave pays them and their delegators nothing, so a consumer reading their commission as burned invents it",
             inflation_rewards_unadmitted_at_slot
         );
     }
@@ -593,7 +619,9 @@ mod tests {
         super::*,
         crate::utils::vote_account_fixture::staked_vote_accounts,
         agave_feature_set::FeatureSet,
-        solana_vote_interface::state::{VoteStateV3, VoteStateV4, VoteStateVersions},
+        solana_vote_interface::state::{
+            VoteStateV3, VoteStateV4, VoteStateVersions, BLS_PUBLIC_KEY_COMPRESSED_SIZE,
+        },
         std::collections::HashMap,
     };
 
@@ -610,14 +638,25 @@ mod tests {
         })
     }
 
-    fn v4(inflation_rewards_commission_bps: u16) -> VoteStateVersions {
-        VoteStateVersions::new_v4(VoteStateV4 {
+    fn v4_state(inflation_rewards_commission_bps: u16) -> VoteStateV4 {
+        VoteStateV4 {
             inflation_rewards_collector: INFLATION_REWARDS_COLLECTOR,
             block_revenue_collector: BLOCK_REVENUE_COLLECTOR,
             inflation_rewards_commission_bps,
             block_revenue_commission_bps: 1234,
             pending_delegator_rewards: 987_654_321,
             ..VoteStateV4::default()
+        }
+    }
+
+    fn v4(inflation_rewards_commission_bps: u16) -> VoteStateVersions {
+        VoteStateVersions::new_v4(v4_state(inflation_rewards_commission_bps))
+    }
+
+    fn v4_with_bls_key(inflation_rewards_commission_bps: u16) -> VoteStateVersions {
+        VoteStateVersions::new_v4(VoteStateV4 {
+            bls_pubkey_compressed: Some([9u8; BLS_PUBLIC_KEY_COMPRESSED_SIZE]),
+            ..v4_state(inflation_rewards_commission_bps)
         })
     }
 
@@ -660,7 +699,12 @@ mod tests {
         live_vote_accounts: &VoteAccountsHashMap,
         admitted: &VoteAccountsHashMap,
     ) -> VoteAccountMetaCollection {
-        fetch_vote_account_metas(live_vote_accounts, |_| None, Some(admitted), EPOCH)
+        fetch_vote_account_metas(
+            live_vote_accounts,
+            |_| None,
+            Some(AdmissionFilter { admitted }),
+            EPOCH,
+        )
     }
 
     fn features_admitting(active: Option<bool>) -> SnapshotFeatures {
@@ -685,7 +729,7 @@ mod tests {
     }
 
     #[test]
-    fn a_staked_vote_account_the_filter_drops_is_marked_unadmitted_and_counted() {
+    fn a_staked_vote_account_holding_no_bls_key_is_marked_unadmitted_and_counted() {
         let live = vote_accounts([(VOTE_ACCOUNT, v4(700)), (OTHER_VOTE_ACCOUNT, v4(500))]);
         let admitted = vote_accounts([(VOTE_ACCOUNT, v4(700))]);
 
@@ -699,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unstaked_vote_account_the_filter_drops_is_marked_unadmitted_and_not_counted() {
+    fn an_unstaked_vote_account_holding_no_bls_key_is_marked_unadmitted_and_not_counted() {
         let live = staked_vote_accounts([(VOTE_ACCOUNT, v4(700), 0)]);
         let admitted = vote_accounts([(OTHER_VOTE_ACCOUNT, v4(500))]);
 
@@ -708,6 +752,40 @@ mod tests {
         assert_eq!(
             meta_of(&collection, &VOTE_ACCOUNT).inflation_rewards_admitted,
             Some(false)
+        );
+        assert_eq!(collection.inflation_rewards_unadmitted_at_slot, 0);
+    }
+
+    // the epoch 1030 defect: a validator that starts voting mid-epoch holds no stake here and its
+    // delegations activate on the very bank that filters, which admits it and credits it a Voting row
+    #[test]
+    fn an_unstaked_vote_account_the_stake_criterion_alone_drops_records_no_verdict() {
+        let live = staked_vote_accounts([(VOTE_ACCOUNT, v4_with_bls_key(700), 0)]);
+        let admitted = vote_accounts([(OTHER_VOTE_ACCOUNT, v4(500))]);
+
+        let collection = metas_admitting(&live, &admitted);
+
+        assert_eq!(
+            meta_of(&collection, &VOTE_ACCOUNT).inflation_rewards_admitted,
+            None
+        );
+        assert_eq!(collection.inflation_rewards_unadmitted_at_slot, 0);
+    }
+
+    #[test]
+    fn a_staked_vote_account_the_cutoff_alone_drops_records_no_verdict() {
+        let live = vote_accounts([
+            (VOTE_ACCOUNT, v4_with_bls_key(700)),
+            (OTHER_VOTE_ACCOUNT, v4_with_bls_key(500)),
+        ]);
+        let admitted = vote_accounts([(VOTE_ACCOUNT, v4_with_bls_key(700))]);
+
+        let collection = metas_admitting(&live, &admitted);
+
+        assert_eq!(
+            meta_of(&collection, &OTHER_VOTE_ACCOUNT).inflation_rewards_admitted,
+            None,
+            "the E+1 stakes rank the cutoff, so this bank cannot say the payout refused it"
         );
         assert_eq!(collection.inflation_rewards_unadmitted_at_slot, 0);
     }
@@ -862,6 +940,24 @@ mod tests {
             collection.commission_vintage_next_snapshot_fallbacks, 0,
             "no next snapshot exists to fall back to, so the two counters cannot both claim it"
         );
+    }
+
+    // SIMD-0357 filtering leaves thousands of these outside both snapshots every epoch
+    #[test]
+    fn an_unstaked_vote_account_no_snapshot_carries_is_resolved_at_the_slot_and_counted_nowhere() {
+        let live = staked_vote_accounts([(VOTE_ACCOUNT, v4(9_000), 0)]);
+        let epoch_stakes =
+            HashMap::from([(EPOCH, vote_accounts([(OTHER_VOTE_ACCOUNT, v4(5_000))]))]);
+
+        let collection = metas_from(&live, &epoch_stakes);
+
+        assert_eq!(
+            meta_of(&collection, &VOTE_ACCOUNT).inflation_rewards_commission_bps,
+            9_000,
+            "the commission still comes from where agave would read it"
+        );
+        assert_eq!(collection.commission_vintage_live_state_fallbacks, 0);
+        assert_eq!(collection.commission_vintage_next_snapshot_fallbacks, 0);
     }
 
     // a staked schedule-vintage member gone by the slot leads slots no row here can be joined to
