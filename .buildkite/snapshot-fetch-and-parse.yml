@@ -51,9 +51,22 @@ steps:
         \`\`\`
         EOF
 
+  - label: ":test_tube: Annotate dry run"
+    if: build.env("TEST_MODE") != null
+    commands:
+    - |
+      cat <<- EOF | buildkite-agent annotate --priority 10 --style warning --context "dry-run"
+      ### Dry run - nothing is written outside this build
+
+      TEST_MODE is set, so these steps do not run: past-validators copy, artifact upload to
+      \`$GCLOUD_SNAPSHOTS\`, the stakes ETL trigger, and the Slack notification. The parsed
+      collections are published as build artifacts only.
+      EOF
+
   - wait: ~
 
   - label: ":mega: Notification"
+    if: build.env("TEST_MODE") == null
     commands:
     - |
       epoch=${EPOCH:-$(buildkite-agent meta-data get epoch)}
