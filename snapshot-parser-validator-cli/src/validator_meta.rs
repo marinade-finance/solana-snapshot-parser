@@ -11,10 +11,7 @@ use {
     solana_runtime::bank::Bank,
     solana_sdk::{account::AccountSharedData, epoch_info::EpochInfo},
     solana_stake_interface::stake_history::Epoch,
-    solana_vote::{
-        vote_account::{VoteAccounts, VoteAccountsHashMap},
-        vote_state_view::VoteStateView,
-    },
+    solana_vote::{vote_account::VoteAccountsHashMap, vote_state_view::VoteStateView},
     std::{fmt::Debug, sync::Arc},
 };
 
@@ -47,7 +44,7 @@ pub struct ValidatorMeta {
     // the pot that same feature's payout divides by stake share
     #[serde(default)]
     pub pending_delegator_rewards: Option<u64>,
-    // false means agave pays this account nothing and its delegators nothing; None means the filter was inactive at slot
+    // agave re-runs the filter on the E+1 stakes, so this can rule the other way there; false also covers an unstaked row
     #[serde(default)]
     pub inflation_rewards_admitted: Option<bool>,
 }
@@ -129,6 +126,11 @@ impl SnapshotFeatures {
             ),
         }
     }
+
+    fn admission_filter_active(&self) -> bool {
+        self.inflation_rewards_validator_admission_ticket_active
+            .unwrap_or(false)
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize, Debug, Default)]
@@ -154,7 +156,7 @@ pub struct ValidatorMetaCollection {
     // staked schedule-vintage members with no row here, whose vote_pubkey leader-schedule.json cannot join
     #[serde(default)]
     pub leader_schedule_vote_accounts_absent_at_slot: usize,
-    // staked rows SIMD-0357 keeps out of the payout, so their commission is unearned rather than burned
+    // staked rows SIMD-0357 refused at slot, whose commission is likely unearned rather than burned
     #[serde(default)]
     pub inflation_rewards_unadmitted_at_slot: usize,
     #[serde(default)]
@@ -292,7 +294,7 @@ impl<'a> CommissionVintageSource<'a> {
 fn fetch_vote_account_metas<'a>(
     live_vote_accounts: &VoteAccountsHashMap,
     epoch_vote_accounts: impl Fn(Epoch) -> Option<&'a VoteAccountsHashMap>,
-    admitted_vote_accounts: Option<&VoteAccounts>,
+    admitted_vote_accounts: Option<&VoteAccountsHashMap>,
     epoch: Epoch,
 ) -> VoteAccountMetaCollection {
     let commission_source = CommissionVintageSource::new(epoch_vote_accounts, epoch);
@@ -335,7 +337,7 @@ fn fetch_vote_account_metas<'a>(
             .block_revenue_view(pubkey)
             .and_then(v4_block_revenue_fields);
         let inflation_rewards_admitted =
-            admitted_vote_accounts.map(|admitted| admitted.get(pubkey).is_some());
+            admitted_vote_accounts.map(|admitted| admitted.contains_key(pubkey));
         // an unstaked account is refused for holding no stake, which says nothing about its ticket
         if inflation_rewards_admitted == Some(false) && *stake > 0 {
             inflation_rewards_unadmitted_at_slot += 1;
@@ -424,10 +426,9 @@ pub fn generate_validator_collection(
 
     let live_vote_accounts = bank.vote_accounts();
     let features = SnapshotFeatures::from_feature_snapshot(bank.feature_set.snapshot());
-    // agave applies the same filter one epoch on, where a ticket can only have been bought, never sold
+    // agave filters the E+1 activated stakes instead, so both stake-valued criteria can rule the other way there
     let admitted_stakes = features
-        .inflation_rewards_validator_admission_ticket_active
-        .unwrap_or(false)
+        .admission_filter_active()
         .then(|| bank.get_top_epoch_stakes());
     let VoteAccountMetaCollection {
         metas: vote_account_metas,
@@ -441,7 +442,7 @@ pub fn generate_validator_collection(
         |epoch| bank.epoch_vote_accounts(epoch),
         admitted_stakes
             .as_ref()
-            .map(|stakes| stakes.vote_accounts()),
+            .map(|stakes| stakes.vote_accounts().as_ref()),
         epoch,
     );
     let collector_vintage = VoteStateVintage::from_live_stakes_cache(epoch);
@@ -552,7 +553,7 @@ pub fn generate_validator_collection(
     }
     if inflation_rewards_unadmitted_at_slot > 0 {
         warn!(
-            "{} staked vote accounts hold no SIMD-0357 admission ticket; agave pays them and their delegators nothing, so a consumer reading their commission as burned invents it",
+            "{} staked vote accounts fail SIMD-0357 admission at this slot (ticket balance, BLS key, or the 2000-account stake cutoff); agave likely pays them and their delegators nothing, so a consumer reading their commission as burned invents it",
             inflation_rewards_unadmitted_at_slot
         );
     }
@@ -657,19 +658,22 @@ mod tests {
 
     fn metas_admitting(
         live_vote_accounts: &VoteAccountsHashMap,
-        admitted: &VoteAccounts,
+        admitted: &VoteAccountsHashMap,
     ) -> VoteAccountMetaCollection {
         fetch_vote_account_metas(live_vote_accounts, |_| None, Some(admitted), EPOCH)
     }
 
-    fn admitted_set(vote_accounts: VoteAccountsHashMap) -> VoteAccounts {
-        VoteAccounts::from(Arc::new(vote_accounts))
+    fn features_admitting(active: Option<bool>) -> SnapshotFeatures {
+        SnapshotFeatures {
+            inflation_rewards_validator_admission_ticket_active: active,
+            ..SnapshotFeatures::default()
+        }
     }
 
     #[test]
     fn an_admitted_vote_account_is_marked_admitted_and_counted_nowhere() {
         let live = vote_accounts([(VOTE_ACCOUNT, v4(700))]);
-        let admitted = admitted_set(vote_accounts([(VOTE_ACCOUNT, v4(700))]));
+        let admitted = vote_accounts([(VOTE_ACCOUNT, v4(700))]);
 
         let collection = metas_admitting(&live, &admitted);
 
@@ -683,7 +687,7 @@ mod tests {
     #[test]
     fn a_staked_vote_account_the_filter_drops_is_marked_unadmitted_and_counted() {
         let live = vote_accounts([(VOTE_ACCOUNT, v4(700)), (OTHER_VOTE_ACCOUNT, v4(500))]);
-        let admitted = admitted_set(vote_accounts([(VOTE_ACCOUNT, v4(700))]));
+        let admitted = vote_accounts([(VOTE_ACCOUNT, v4(700))]);
 
         let collection = metas_admitting(&live, &admitted);
 
@@ -697,7 +701,7 @@ mod tests {
     #[test]
     fn an_unstaked_vote_account_the_filter_drops_is_marked_unadmitted_and_not_counted() {
         let live = staked_vote_accounts([(VOTE_ACCOUNT, v4(700), 0)]);
-        let admitted = admitted_set(vote_accounts([(OTHER_VOTE_ACCOUNT, v4(500))]));
+        let admitted = vote_accounts([(OTHER_VOTE_ACCOUNT, v4(500))]);
 
         let collection = metas_admitting(&live, &admitted);
 
@@ -719,6 +723,18 @@ mod tests {
             None
         );
         assert_eq!(collection.inflation_rewards_unadmitted_at_slot, 0);
+    }
+
+    #[test]
+    fn the_bank_filter_runs_only_where_the_snapshot_proves_simd_0357_active() {
+        assert!(features_admitting(Some(true)).admission_filter_active());
+    }
+
+    #[test]
+    fn an_unproven_admission_flag_leaves_the_bank_filter_off() {
+        // get_top_epoch_stakes hands back every stake unfiltered while the feature is off, which would publish a blanket true
+        assert!(!features_admitting(None).admission_filter_active());
+        assert!(!features_admitting(Some(false)).admission_filter_active());
     }
 
     // the anti-rug snapshot: a mid-epoch conversion to v4 at 100% is still paid the pre-v4 vintage's commission
