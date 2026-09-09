@@ -55,12 +55,15 @@ before the epoch ended leads slots that no row here can answer for. It is normal
 has that many vote accounts with no right-hand side, and the parser logs a warning
 naming the count.
 
-The collector vintage is the one place the parser is knowingly wider than agave:
-`bank.vote_accounts()` is unfiltered, while agave pays only the vote accounts
-that survive SIMD-0357 admission filtering, so a filtered-out account still gets
-a row here and earns nothing. `features.inflation_rewards_validator_admission_ticket_active`
-says whether that filter is in play; the top-N part of it is not something an
-end-of-E bank can reproduce.
+`bank.vote_accounts()` is unfiltered while agave pays only the vote accounts
+surviving SIMD-0357 filtering. `inflation_rewards_admitted` is how
+`bank.get_top_epoch_stakes()` ruled at `slot` and
+`inflation_rewards_unadmitted_at_slot` counts only the staked refusals - an
+unstaked row reads `false` for holding no stake. It is not agave's verdict:
+agave re-runs the filter on the E+1 activated stakes, where either stake-valued
+criterion can flip it. `null` means inactive at `slot`, which does not rule out
+activation on that E+1 bank, and is also what a pre-field `validators.json`
+records.
 
 `features` publishes the agave flags these vintages depend on. The two block
 revenue flags are independent and neither stands in for the other:
