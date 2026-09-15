@@ -6,6 +6,7 @@ path = "src/bin/cli.rs"
 name = "snapshot-parser-validator-cli"
 version = "0.0.0"
 edition = "2021"
+license.workspace = true
 
 [dependencies]
 ahash = { workspace = true }
