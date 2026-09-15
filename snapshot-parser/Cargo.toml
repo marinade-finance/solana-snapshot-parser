@@ -6,6 +6,7 @@ edition = "2021"
 license.workspace = true
 
 [dependencies]
+agave-feature-set = { workspace = true }
 ahash = { workspace = true }
 anyhow = { workspace = true }
 bincode = { workspace = true }

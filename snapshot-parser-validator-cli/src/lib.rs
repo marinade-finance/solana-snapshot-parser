@@ -1,3 +1,4 @@
+pub mod inflation_rewards_points;
 pub mod jito_mev;
 pub mod jito_priority_fee;
 pub mod jito_program_hash;

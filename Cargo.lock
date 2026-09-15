@@ -5133,6 +5133,7 @@ dependencies = [
 name = "snapshot-parser"
 version = "0.0.0"
 dependencies = [
+ "agave-feature-set",
  "agave-snapshots",
  "ahash 0.8.12",
  "anyhow",
@@ -5183,6 +5184,7 @@ name = "snapshot-parser-validator-cli"
 version = "0.0.0"
 dependencies = [
  "agave-feature-set",
+ "agave-votor-messages",
  "ahash 0.8.12",
  "anyhow",
  "bincode",

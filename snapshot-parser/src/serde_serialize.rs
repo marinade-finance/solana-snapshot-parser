@@ -48,6 +48,27 @@ pub mod option_pubkey_string_conversion {
     }
 }
 
+// a JSON number past 2^53 loses digits in every JavaScript consumer, so a u128 travels as a string
+pub mod option_u128_string_conversion {
+    use serde::{self, Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(value: &Option<u128>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        value.as_ref().map(u128::to_string).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<u128>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Option::<String>::deserialize(deserializer)?
+            .map(|value| value.parse().map_err(serde::de::Error::custom))
+            .transpose()
+    }
+}
+
 pub mod map_pubkey_string_conversion {
     use serde::de::{MapAccess, Visitor};
     use serde::ser::SerializeMap;
