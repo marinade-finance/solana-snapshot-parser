@@ -70,17 +70,22 @@ a pre-field `validators.json` records.
 `inflation_rewards_unadmitted_at_slot` counts the staked `false` rows, the ones
 whose commission a consumer could otherwise read as burned.
 
-`inflation_rewards_points` is what agave divides the epoch's inflation by, summed
-over the vote account's delegations. It is not `stake * credits`: a stake agave
-left unpaid - for one, while SIMD-0357 refused its validator - keeps its
-`credits_observed` and is paid every epoch it missed once the validator is paid
-again. It ignores admission, and agave sums only the accounts it admits. Besides
-the `false` rows, agave can refuse a `null` one on its E+1 stake, balance or
-cutoff. So the column sums to agave's divisor only when nothing was refused;
-otherwise read `total_points` from the E+1 `EpochRewards` sysvar.
-It is a decimal string because it outgrows a JSON number. In the Alpenglow
-migration epoch it holds only the Tower points, which agave applies to that
-epoch's Tower slots, and it is `null` for every epoch after.
+`inflation_rewards_points` is the vote account's share of what agave divides the
+epoch's inflation by, summed over its delegations. It is a decimal string because
+it outgrows a JSON number.
+
+It is not `stake * credits`. A stake agave left unpaid - while SIMD-0357 refused
+its validator, for one - keeps its `credits_observed`, and is paid for every epoch
+it missed once the validator is paid again.
+
+Every vote account gets a value, admitted or not, while agave divides by the
+admitted ones alone: besides the `false` rows it can refuse a `null` one on its
+E+1 stake, balance or cutoff. So the column sums to agave's divisor only for an
+epoch that refused nothing; otherwise take `total_points` from the E+1
+`EpochRewards` sysvar.
+
+In the Alpenglow migration epoch it holds only the Tower points, which agave
+applies to that epoch's Tower slots, and it is `null` for every epoch after.
 
 `features` publishes the agave flags these vintages depend on. The two block
 revenue flags are independent and neither stands in for the other:
