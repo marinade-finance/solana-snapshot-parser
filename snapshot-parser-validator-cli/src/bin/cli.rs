@@ -117,6 +117,7 @@ fn main() -> anyhow::Result<()> {
     let require_priority_fee_data = args.require_priority_fee_data;
     let validator_meta_collection_handle = {
         let bank = bank.clone();
+        let stake_accounts = scanned_accounts.stake.clone();
         let tip_distribution = scanned_accounts.tip_distribution.clone();
         let priority_fee_distribution = scanned_accounts.priority_fee_distribution.clone();
         spawn(move || {
@@ -125,6 +126,7 @@ fn main() -> anyhow::Result<()> {
             let call = || -> anyhow::Result<()> {
                 let validator_meta_collection = validator_meta::generate_validator_collection(
                     &bank,
+                    &stake_accounts,
                     &tip_distribution,
                     &priority_fee_distribution,
                     require_priority_fee_data,

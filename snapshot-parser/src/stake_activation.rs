@@ -1,4 +1,5 @@
 use {
+    agave_feature_set::upgrade_bpf_stake_program_to_v5_1,
     solana_runtime::bank::Bank,
     solana_sdk::account::ReadableAccount,
     solana_stake_interface::{
@@ -32,6 +33,15 @@ impl StakeActivation {
         })
     }
 
+    // agave rewards epoch E on the E+1 bank, which first activates the features this bank holds pending
+    pub fn on_the_distribution_bank(bank: &Bank) -> anyhow::Result<Self> {
+        let mut activation = Self::new(bank)?;
+        activation.fixed_point_stake_math |= bank
+            .compute_pending_activation_slot(&upgrade_bpf_stake_program_to_v5_1::id())
+            .is_some();
+        Ok(activation)
+    }
+
     pub fn epoch(&self) -> Epoch {
         self.epoch
     }
@@ -60,6 +70,16 @@ impl StakeActivation {
     pub fn effective(&self, delegation: &Delegation) -> u64 {
         self.status(delegation).effective
     }
+
+    // agave's delegation_effective_stake, which weighs each epoch_credits entry by its own epoch
+    #[allow(clippy::disallowed_methods, deprecated)]
+    pub fn effective_at(&self, delegation: &Delegation, epoch: Epoch) -> u64 {
+        if self.fixed_point_stake_math {
+            delegation.stake_v2(epoch, &self.history, self.new_rate_activation_epoch)
+        } else {
+            delegation.stake(epoch, &self.history, self.new_rate_activation_epoch)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -67,6 +87,7 @@ mod tests {
     use super::*;
     use {
         solana_runtime::genesis_utils::{create_genesis_config, GenesisConfigInfo},
+        solana_sdk::clock::Slot,
         std::sync::Arc,
     };
 
@@ -104,6 +125,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_pending_fixed_point_math_is_active_on_the_distribution_bank() {
+        let GenesisConfigInfo {
+            mut genesis_config, ..
+        } = create_genesis_config(1_000_000);
+        let feature = genesis_config
+            .accounts
+            .get_mut(&upgrade_bpf_stake_program_to_v5_1::id())
+            .expect("the test genesis activates every feature");
+        bincode::serialize_into(&mut feature.data[..], &None::<Slot>).unwrap();
+        let bank = Bank::new_for_tests(&genesis_config);
+
+        assert!(
+            !StakeActivation::new(&bank).unwrap().fixed_point_stake_math,
+            "a feature pending at this bank is not active on it"
+        );
+        assert!(
+            StakeActivation::on_the_distribution_bank(&bank)
+                .unwrap()
+                .fixed_point_stake_math,
+            "the E+1 bank activates the pending feature before it calculates E's rewards"
+        );
+    }
+
     #[allow(clippy::disallowed_methods, deprecated)]
     #[test]
     fn each_flag_value_selects_the_matching_upstream_math() {
@@ -138,5 +183,27 @@ mod tests {
 
         assert_eq!(activation(false).status(&delegation), float);
         assert_eq!(activation(true).status(&delegation), fixed);
+
+        assert_ne!(
+            float.effective, fixed.effective,
+            "fixture must keep the two effective stakes apart, otherwise effective_at's dispatch is untested"
+        );
+        assert_eq!(
+            activation(false).effective_at(&delegation, epoch),
+            float.effective
+        );
+        assert_eq!(
+            activation(true).effective_at(&delegation, epoch),
+            fixed.effective
+        );
+        assert_ne!(
+            fixed.effective, 0,
+            "a zero here would make the next check vacuous"
+        );
+        assert_eq!(
+            activation(true).effective_at(&delegation, 0),
+            0,
+            "the epoch asked for, not the bank's, must decide the warmup"
+        );
     }
 }

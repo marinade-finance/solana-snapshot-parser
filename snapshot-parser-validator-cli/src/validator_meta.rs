@@ -1,11 +1,16 @@
 use crate::jito_priority_fee::fetch_jito_priority_fee_metas;
 use {
-    crate::jito_mev::fetch_jito_mev_metas,
+    crate::{
+        inflation_rewards_points::{pays_tower_points, points_by_vote_account},
+        jito_mev::fetch_jito_mev_metas,
+    },
     agave_feature_set::FeatureSnapshot,
     log::{info, warn},
     serde::{Deserialize, Serialize},
     snapshot_parser::serde_serialize::option_pubkey_string_conversion,
+    snapshot_parser::serde_serialize::option_u128_string_conversion,
     snapshot_parser::serde_serialize::pubkey_string_conversion,
+    snapshot_parser::stake_activation::StakeActivation,
     snapshot_parser::utils::lamports_to_sol,
     solana_program::pubkey::Pubkey,
     solana_runtime::bank::Bank,
@@ -50,6 +55,9 @@ pub struct ValidatorMeta {
     // false is a refusal the E+1 distribution bank must repeat, null one only its stake vintage decides
     #[serde(default)]
     pub inflation_rewards_admitted: Option<bool>,
+    // agave's Tower points over all delegations, missed epochs too; null after the migration epoch
+    #[serde(default, with = "option_u128_string_conversion")]
+    pub inflation_rewards_points: Option<u128>,
 }
 
 impl Ord for ValidatorMeta {
@@ -426,6 +434,7 @@ pub(crate) fn check_end_of_epoch_bank(
 
 pub fn generate_validator_collection(
     bank: &Arc<Bank>,
+    stake_accounts: &[(Pubkey, AccountSharedData)],
     tip_distribution_accounts: &[(Pubkey, AccountSharedData)],
     priority_fee_distribution_accounts: &[(Pubkey, AccountSharedData)],
     require_priority_fee_data: bool,
@@ -472,6 +481,15 @@ pub fn generate_validator_collection(
         epoch,
     );
     let collector_vintage = VoteStateVintage::from_live_stakes_cache(epoch);
+    let inflation_rewards_points = if pays_tower_points(bank) {
+        Some(points_by_vote_account(
+            stake_accounts,
+            &live_vote_accounts,
+            &StakeActivation::on_the_distribution_bank(bank)?,
+        ))
+    } else {
+        None
+    };
     let jito_mev_metas = fetch_jito_mev_metas(tip_distribution_accounts, epoch)?;
     let jito_priority_fee_metas = fetch_jito_priority_fee_metas(
         priority_fee_distribution_accounts,
@@ -530,6 +548,12 @@ pub fn generate_validator_collection(
                 block_revenue_commission_bps: vote_account_meta.block_revenue_commission_bps,
                 pending_delegator_rewards: vote_account_meta.pending_delegator_rewards,
                 inflation_rewards_admitted: vote_account_meta.inflation_rewards_admitted,
+                inflation_rewards_points: inflation_rewards_points.as_ref().map(|points| {
+                    points
+                        .get(&vote_account_meta.vote_account)
+                        .copied()
+                        .unwrap_or(0)
+                }),
             }
         })
         .collect::<Vec<_>>();
@@ -571,6 +595,16 @@ pub fn generate_validator_collection(
         commission_vintage_live_state_fallbacks,
     );
     info!("Collector vintage: {:?}", collector_vintage);
+    match &inflation_rewards_points {
+        Some(points) => info!(
+            "Inflation rewards points: {} over {} vote accounts",
+            points.values().sum::<u128>(),
+            points.len()
+        ),
+        None => warn!(
+            "Alpenglow migrated before epoch {epoch}, so it is not paid by Tower points and none are published"
+        ),
+    }
     if leader_schedule_vote_accounts_absent_at_slot > 0 {
         warn!(
             "{} staked vote accounts of the leader schedule vintage hold no row here; leader-schedule.json can name a vote_pubkey this collection cannot answer",
@@ -1230,6 +1264,7 @@ mod tests {
             block_revenue_commission_bps: Some(1234),
             pending_delegator_rewards: Some(987_654_321),
             inflation_rewards_admitted: Some(true),
+            inflation_rewards_points: Some(29_503_827_922_340_690_000_000),
         }
     }
 
@@ -1253,6 +1288,7 @@ mod tests {
                 "block_revenue_commission_bps": 1234,
                 "pending_delegator_rewards": 987_654_321,
                 "inflation_rewards_admitted": true,
+                "inflation_rewards_points": "29503827922340690000000",
             })
         );
     }
@@ -1267,6 +1303,7 @@ mod tests {
             block_revenue_commission_bps: None,
             pending_delegator_rewards: None,
             inflation_rewards_admitted: None,
+            inflation_rewards_points: None,
             ..validator_meta()
         };
 
@@ -1287,6 +1324,7 @@ mod tests {
                 "block_revenue_commission_bps": null,
                 "pending_delegator_rewards": null,
                 "inflation_rewards_admitted": null,
+                "inflation_rewards_points": null,
             })
         );
     }
@@ -1406,5 +1444,25 @@ mod tests {
         assert_eq!(meta.block_revenue_collector, None);
         assert_eq!(meta.block_revenue_commission_bps, None);
         assert_eq!(meta.pending_delegator_rewards, None);
+        assert_eq!(
+            meta.inflation_rewards_points, None,
+            "a file that published no points must not be read as zero points"
+        );
+    }
+
+    // past u64, so a float or a u64 on either side of the file would corrupt it
+    #[test]
+    fn points_past_u64_round_trip_through_json_as_a_string() {
+        let meta = ValidatorMeta {
+            inflation_rewards_points: Some(u128::MAX),
+            ..validator_meta()
+        };
+
+        let json = serde_json::to_value(&meta).unwrap();
+        assert_eq!(
+            json["inflation_rewards_points"],
+            serde_json::json!(u128::MAX.to_string())
+        );
+        assert_eq!(serde_json::from_value::<ValidatorMeta>(json).unwrap(), meta);
     }
 }
