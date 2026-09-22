@@ -2,17 +2,22 @@ agents:
   queue: "snapshots"
 
 env:
-  GCLOUD_SNAPSHOTS: "gs://marinade-solana-snapshot-mainnet"
-  LOCAL_SNAPSHOTS: "/mnt/snapshots-storage/snapshots"
-  WORKING_DIR: "/mnt/storage-1/snapshots"
+  CLUSTER: "${CLUSTER:-mainnet}"
   slack_api: "https://slack.com/api/chat.postMessage"
-  slack_feed: "feed-snapshot"
 
 steps:
   - label: ":closed_lock_with_key: Concurrency gate lock"
     command: echo "--> Start of concurrency gate"
-    concurrency_group: 'solana-snapshot-parser/fetch-and-parse'
+    concurrency_group: 'solana-snapshot-parser/fetch-and-parse-${CLUSTER:-mainnet}'
     concurrency: 1
+
+  - label: "🧹 Cleanup"
+    if: build.env('CLUSTER') == 'testnet'
+    commands:
+    # Reclaim leftover dirs from prior runs whose end Cleanup didn't run.
+    - working_dir=$(./scripts/cluster-config.bash "$$CLUSTER" WORKING_DIR)
+    - mkdir -p "$$working_dir"
+    - find "$$working_dir" -mindepth 1 -maxdepth 1 -type d -name 'snapshot-*' -exec rm -rf --preserve-root {} +
 
   - input: "Which epoch to fetch?"
     fields:
@@ -30,8 +35,12 @@ steps:
       epoch=${EPOCH:-$(buildkite-agent meta-data get epoch)}
       buildkite-agent meta-data set --redacted-vars='' epoch "$$epoch"
     - |
-      local_snapshot_dir=${LOCAL_SNAPSHOT_DIR:-$LOCAL_SNAPSHOTS}
+      local_snapshots=$(./scripts/cluster-config.bash "$$CLUSTER" LOCAL_SNAPSHOTS)
+      local_snapshot_dir=${LOCAL_SNAPSHOT_DIR:-$$local_snapshots}
       buildkite-agent meta-data set --redacted-vars='' local_snapshot_dir "$$local_snapshot_dir"
+    - |
+      gcloud_snapshots=$(./scripts/cluster-config.bash "$$CLUSTER" GCLOUD_SNAPSHOTS)
+      echo "Cluster: '$$CLUSTER', Epoch: '$$epoch', GCloud: '$$gcloud_snapshots', Local Snapshot Dir: '$$local_snapshot_dir'"
 
   - label: ":memo: Annotate retry parameters"
     depends_on: "setup-env-init"
@@ -45,6 +54,7 @@ steps:
         If you need to retry the build, use the following parameters:
 
         \`\`\`
+        CLUSTER=$$CLUSTER
         EPOCH=$$epoch
         LOCAL_SNAPSHOT_DIR=$$local_snapshot_dir
         TEST_MODE=$$TEST_MODE
@@ -58,11 +68,12 @@ steps:
     - |
       epoch=${EPOCH:-$(buildkite-agent meta-data get epoch)}
       local_snapshot_dir=$(buildkite-agent meta-data get local_snapshot_dir)
+      slack_feed=$(./scripts/cluster-config.bash "$$CLUSTER" SLACK_FEED)
       test_mode=$([[ -n "$TEST_MODE" && "$TEST_MODE" != "null" ]] && echo " [Test Mode: $$local_snapshot_dir]" || echo "")
       buildkite-agent meta-data set --redacted-vars="" epoch "$$epoch"
       curl ${slack_api} -X POST -H 'Content-Type: application/json; charset=utf-8' \
         -H "Authorization: Bearer $$SLACK_BEARER_TOKEN" -d '{
-          "channel": "'"$slack_feed"'",
+          "channel": "'"$$slack_feed"'",
           "attachments": [
             {
               "author_name": "Solana Snapshot Parser",
@@ -80,28 +91,48 @@ steps:
     - ulimit -a
     - epoch=$(buildkite-agent meta-data get epoch)
     - local_snapshot_dir=$(buildkite-agent meta-data get local_snapshot_dir)
+    - working_dir=$(./scripts/cluster-config.bash "$$CLUSTER" WORKING_DIR)
     - |
-      mkdir -p $$WORKING_DIR
-      snapshot_dir=$(mktemp --directory -p "$$WORKING_DIR" "snapshot-$$epoch-$(date +%s)-XXXXXX")
+      mkdir -p "$$working_dir"
+      snapshot_dir=$(mktemp --directory -p "$$working_dir" "snapshot-$$epoch-$(date +%s)-XXXXXX")
+      buildkite-agent meta-data set --redacted-vars="" snapshot_dir "$$snapshot_dir"
 
-      # Check if snapshot already exists in local storage
       local_snapshot=$(find $$local_snapshot_dir/*/$$epoch/ -name 'snapshot-*.tar.zst' 2>/dev/null | head -1)
       if [[ -n "$$local_snapshot" ]]; then
         echo "Found local snapshot at: $$local_snapshot"
-        ln -s "$$local_snapshot" "$$snapshot_dir/"
+        buildkite-agent meta-data set --redacted-vars="" local_snapshot "$$local_snapshot"
         buildkite-agent meta-data set --redacted-vars="" snapshot_local "true"
       else
         echo "No local snapshot found, using temp dir: $$snapshot_dir"
         buildkite-agent meta-data set --redacted-vars="" snapshot_local "false"
       fi
-      buildkite-agent meta-data set --redacted-vars="" snapshot_dir "$$snapshot_dir"
 
   - wait: ~
+
+  - label: ":link: Link local snapshot"
+    if: build.env('CLUSTER') == null || build.env('CLUSTER') == 'mainnet'
+    commands:
+    - snapshot_local=$(buildkite-agent meta-data get snapshot_local)
+    - |
+      if [[ "$$snapshot_local" == "true" ]]; then
+        ln -s "$(buildkite-agent meta-data get local_snapshot)" "$(buildkite-agent meta-data get snapshot_dir)/"
+      fi
+
+  - label: ":link: Copy local snapshot"
+    if: build.env('CLUSTER') == 'testnet'
+    commands:
+    - snapshot_local=$(buildkite-agent meta-data get snapshot_local)
+    # Copy (not symlink): unpacking the local testnet archive via a symlink fails with EPERM (os error 1).
+    - |
+      if [[ "$$snapshot_local" == "true" ]]; then
+        cp -- "$(buildkite-agent meta-data get local_snapshot)" "$(buildkite-agent meta-data get snapshot_dir)/"
+      fi
 
   - label: ":cloud: :arrow_right: :floppy_disk: Fetch genesis"
     commands:
     - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
-    - ./scripts/fetch-genesis.bash "$$snapshot_dir"
+    - genesis_rpc_url=$(./scripts/cluster-config.bash "$$CLUSTER" GENESIS_RPC_URL)
+    - ./scripts/fetch-genesis.bash "$$snapshot_dir" "$$genesis_rpc_url"
 
   - label: ":cloud: :arrow_right: :floppy_disk: Fetch snapshot"
     commands:
@@ -112,7 +143,8 @@ steps:
       else
         snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
         epoch=$(buildkite-agent meta-data get epoch)
-        ./scripts/fetch-snapshot.bash "$$epoch" "$$snapshot_dir" "$GCLOUD_SNAPSHOTS"
+        gcloud_snapshots=$(./scripts/cluster-config.bash "$$CLUSTER" GCLOUD_SNAPSHOTS)
+        ./scripts/fetch-snapshot.bash "$$epoch" "$$snapshot_dir" "$$gcloud_snapshots"
       fi
 
   - label: ":hammer_and_wrench: :rust: Build"
@@ -136,6 +168,9 @@ steps:
         - ./leader-schedule.json
     commands:
     - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
+    - tip_distribution_program=$(./scripts/cluster-config.bash "$$CLUSTER" TIP_DISTRIBUTION_PROGRAM)
+    - tip_payment_program=$(./scripts/cluster-config.bash "$$CLUSTER" TIP_PAYMENT_PROGRAM)
+    - require_priority_fee_data=$(./scripts/cluster-config.bash "$$CLUSTER" REQUIRE_PRIORITY_FEE_DATA)
     - buildkite-agent artifact download --include-retried-jobs target/release/snapshot-parser-validator-cli .
     - chmod +x target/release/snapshot-parser-validator-cli
     - |
@@ -149,6 +184,9 @@ steps:
         --output-stake-meta-collection "./stakes.json" \
         --output-jito-stake-meta "./jito-stake-meta-{hash}.json" \
         --output-leader-schedule "./leader-schedule.json" \
+        --tip-distribution-program "$$tip_distribution_program" \
+        --tip-payment-program "$$tip_payment_program" \
+        --require-priority-fee-data "$$require_priority_fee_data" \
         --require-jito-stake-meta true \
         --require-leader-schedule false
 
@@ -177,26 +215,28 @@ steps:
     - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
     - epoch=$(buildkite-agent meta-data get epoch)
     - previous_epoch=$((epoch - 1))
-    - gcloud storage cp "$GCLOUD_SNAPSHOTS/$$previous_epoch/validators.json" "$GCLOUD_SNAPSHOTS/$$epoch/past-validators.json" || echo "Previous validator data not available!"
+    - gcloud_snapshots=$(./scripts/cluster-config.bash "$$CLUSTER" GCLOUD_SNAPSHOTS)
+    - gcloud storage cp "$$gcloud_snapshots/$$previous_epoch/validators.json" "$$gcloud_snapshots/$$epoch/past-validators.json" || echo "Previous validator data not available!"
 
   - label: ":floppy_disk: :arrow_right: :cloud: Upload artifacts"
     if: build.env("TEST_MODE") == null
     commands:
     - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
     - epoch=$(buildkite-agent meta-data get epoch)
+    - gcloud_snapshots=$(./scripts/cluster-config.bash "$$CLUSTER" GCLOUD_SNAPSHOTS)
     # Checked before the first upload, so a failing epoch leaves no partial data in GCS
     - |
       if ! jito_stake_meta_name=$(./scripts/find-jito-stake-meta.bash "$$snapshot_dir"); then
         echo "No single, validly named Jito stake meta collection to upload for the stakes ETL, see the job log above." | buildkite-agent annotate --style error --context "jito-stake-meta"
         exit 1
       fi
-    - gcloud storage cp "$$snapshot_dir/validators.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
-    - gcloud storage cp "$$snapshot_dir/stakes.json" "$GCLOUD_SNAPSHOTS/$$epoch/"
-    - gcloud storage cp "$$snapshot_dir/$$jito_stake_meta_name" "$GCLOUD_SNAPSHOTS/$$epoch/$$jito_stake_meta_name"
+    - gcloud storage cp "$$snapshot_dir/validators.json" "$$gcloud_snapshots/$$epoch/"
+    - gcloud storage cp "$$snapshot_dir/stakes.json" "$$gcloud_snapshots/$$epoch/"
+    - gcloud storage cp "$$snapshot_dir/$$jito_stake_meta_name" "$$gcloud_snapshots/$$epoch/$$jito_stake_meta_name"
     # Uploaded last, so it never stands between the other three and the bucket
     - |
       if [[ -f "$$snapshot_dir/leader-schedule.json" ]]; then
-        gcloud storage cp "$$snapshot_dir/leader-schedule.json" "$GCLOUD_SNAPSHOTS/$$epoch/leader-schedule.json"
+        gcloud storage cp "$$snapshot_dir/leader-schedule.json" "$$gcloud_snapshots/$$epoch/leader-schedule.json"
       else
         echo "No leader schedule to upload for epoch $$epoch! Block fees of this epoch stay attributed by validator identity until it is republished." | buildkite-agent annotate --style warning --context "leader-schedule"
       fi
@@ -211,8 +251,9 @@ steps:
 
   - wait: ~
 
+  # TODO(GEN-8625): enable for testnet once the testnet ETL scheduler exists.
   - label: ":gear: Trigger Stakes ETL to speed up pipeline processing"
-    if: build.env("TEST_MODE") == null
+    if: build.env("TEST_MODE") == null && (build.env('CLUSTER') == null || build.env('CLUSTER') == 'mainnet')
     env:
       TRIGGER_BRANCH: "main"
     commands:
@@ -229,5 +270,5 @@ steps:
 
   - label: ":unlock: Concurrency gate unlock"
     command: echo "End of concurrency gate <--"
-    concurrency_group: 'solana-snapshot-parser/fetch-and-parse'
+    concurrency_group: 'solana-snapshot-parser/fetch-and-parse-${CLUSTER:-mainnet}'
     concurrency: 1
