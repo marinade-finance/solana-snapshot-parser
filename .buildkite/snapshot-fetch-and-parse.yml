@@ -20,14 +20,6 @@ steps:
 
   - wait: ~
 
-  - label: "🧹 Cleanup"
-    if: build.env('CLUSTER') == 'testnet'
-    commands:
-    # Reclaim leftover dirs from prior runs whose end Cleanup didn't run.
-    - working_dir=$(./scripts/cluster-config.bash "$$CLUSTER" WORKING_DIR)
-    - mkdir -p "$$working_dir"
-    - find "$$working_dir" -mindepth 1 -maxdepth 1 -type d -name 'snapshot-*' -exec rm -rf --preserve-root {} +
-
   - label: ":black_nib: Env variables setup"
     key: "setup-env-init"
     commands:

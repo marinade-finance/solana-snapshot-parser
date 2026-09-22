@@ -14,6 +14,7 @@ fi
 declare -A config=(
     [mainnet/GCLOUD_SNAPSHOTS]="gs://marinade-solana-snapshot-mainnet"
     [mainnet/LOCAL_SNAPSHOTS]="/mnt/snapshots-storage/snapshots"
+    [mainnet/LOCAL_TEST_SNAPSHOTS]="/mnt/snapshots-storage/test-snapshots"
     [mainnet/WORKING_DIR]="/mnt/storage-1/snapshots"
     [mainnet/SLACK_FEED]="feed-snapshot"
     # Empty lets fetch-genesis.bash fall back to the agent's RPC_URL
@@ -25,7 +26,6 @@ declare -A config=(
 
     [testnet/GCLOUD_SNAPSHOTS]="gs://marinade-solana-snapshot-testnet"
     [testnet/LOCAL_SNAPSHOTS]="/mnt/snapshots-storage/snapshots-testnet"
-    # Nothing prunes it (the scheduler prunes mainnet only), the pipeline's start Cleanup does
     [testnet/WORKING_DIR]="/mnt/storage-1/snapshots-testnet"
     [testnet/SLACK_FEED]="feed-snapshot-testnet"
     # Literal, not $RPC_URL: an agent environment hook owns that name and points it to mainnet
