@@ -23,6 +23,7 @@ declare -A config=(
     [mainnet/TIP_PAYMENT_PROGRAM]="T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt"
     [mainnet/REQUIRE_PRIORITY_FEE_DATA]="true"
     [mainnet/LOCAL_SNAPSHOT_CP_ARGS]="--symbolic-link"
+    [mainnet/ETL_STAKES_SCHEDULER]="etl-stakes-scheduler"
 
     [testnet/GCLOUD_SNAPSHOTS]="gs://marinade-solana-snapshot-testnet"
     [testnet/LOCAL_SNAPSHOTS]="/mnt/snapshots-storage/snapshots-testnet"
@@ -35,6 +36,7 @@ declare -A config=(
     [testnet/REQUIRE_PRIORITY_FEE_DATA]="false"
     # Copy, not symlink: agave opens the archive with O_NOATIME, which needs the agent to own it
     [testnet/LOCAL_SNAPSHOT_CP_ARGS]=""
+    [testnet/ETL_STAKES_SCHEDULER]="etl-stakes-testnet-scheduler"
 )
 
 if [[ -z ${config["$cluster/$key"]+set} ]]

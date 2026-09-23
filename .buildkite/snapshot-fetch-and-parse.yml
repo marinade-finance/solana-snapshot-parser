@@ -231,10 +231,11 @@ steps:
       TRIGGER_BRANCH: "main"
     commands:
     - epoch=$(buildkite-agent meta-data get epoch)
+    - etl_stakes_scheduler=$(./scripts/cluster-config.bash "$$CLUSTER" ETL_STAKES_SCHEDULER)
     - |
       cat <<EOF | buildkite-agent pipeline upload
       steps:
-        - trigger: "etl-stakes-scheduler"
+        - trigger: "$$etl_stakes_scheduler"
           label: ":rocket: Trigger: ETL Stakes Scheduler (epoch: $$epoch)"
           async: true
           build:
