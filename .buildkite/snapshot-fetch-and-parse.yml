@@ -20,6 +20,13 @@ steps:
 
   - wait: ~
 
+  - label: "🧹 Cleanup of leftover snapshot directories"
+    commands:
+    - working_dir=$(./scripts/cluster-config.bash "$$CLUSTER" WORKING_DIR)
+    - |
+      mkdir -p "$$working_dir"
+      find "$$working_dir" -mindepth 1 -maxdepth 1 -type d -name 'snapshot-*' -print -exec rm -rf --preserve-root {} +
+
   - label: ":black_nib: Env variables setup"
     key: "setup-env-init"
     commands:
@@ -52,6 +59,12 @@ steps:
         TEST_MODE=$$TEST_MODE
         \`\`\`
         EOF
+
+  - label: ":globe_with_meridians: Cluster banner"
+    commands:
+    - annotation_style=$(./scripts/cluster-config.bash "$$CLUSTER" ANNOTATION_STYLE)
+    - |
+      echo "## Cluster: $$CLUSTER" | buildkite-agent annotate $${annotation_style:+--style "$$annotation_style"} --priority 10 --context "cluster"
 
   - wait: ~
 
