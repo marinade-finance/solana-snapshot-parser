@@ -1,34 +1,34 @@
 agents:
   queue: "snapshots"
 env:
-  # example gcloud path: marinade-solana-snapshot-mainnet/942/build01
-  GCLOUD_SNAPSHOTS: "gs://marinade-solana-snapshot-mainnet"
-  # example local path: /mnt/snapshots-storage/snapshots/build01/942
-  LOCAL_SNAPSHOTS: "/mnt/snapshots-storage/snapshots"
-  LOCAL_TEST_SNAPSHOTS: "/mnt/snapshots-storage/test-snapshots"
-  WORKING_DIR: "/mnt/storage-1/snapshots"
+  CLUSTER: "${CLUSTER-mainnet}"
 
 steps:
   - command: echo "--> Start of concurrency gate"
-    concurrency_group: 'solana-snapshot-parser/scheduler'
+    concurrency_group: 'solana-snapshot-parser/scheduler-${CLUSTER-mainnet}'
     concurrency: 1
 
   - wait: ~
 
   - label: ":recycle: Pruning old snapshot directories"
-    concurrency_group: 'solana-snapshot-parser/fetch'
+    concurrency_group: 'solana-snapshot-parser/fetch-${CLUSTER-mainnet}'
     concurrency: 1
     commands:
-    - 'ls -td -- "$WORKING_DIR"/*/ | awk "NR>1" | tee /dev/stderr | xargs rm -rf'
+    - working_dir=$(./scripts/cluster-config.bash "$$CLUSTER" WORKING_DIR)
+    - 'ls -td -- "$$working_dir"/*/ | awk "NR>1" | tee /dev/stderr | xargs rm -rf'
 
   - label: ":black_nib: Env variables setup"
     key: "setup-env-init"
     commands:
     - |
-      [[ -n "$TEST_MODE" && "$TEST_MODE" != "null" ]] && local_snapshot_dir="$LOCAL_TEST_SNAPSHOTS" || local_snapshot_dir="$LOCAL_SNAPSHOTS"
+      local_snapshot_key=LOCAL_SNAPSHOTS
+      if [[ -n "$TEST_MODE" && "$TEST_MODE" != "null" ]]; then
+        local_snapshot_key=LOCAL_TEST_SNAPSHOTS
+      fi
+      local_snapshot_dir=$(./scripts/cluster-config.bash "$$CLUSTER" "$$local_snapshot_key")
       buildkite-agent meta-data set --redacted-vars='' local_snapshot_dir "$$local_snapshot_dir"
     - |
-      echo "Test mode: $TEST_MODE, Local Snapshot Dir: '$$local_snapshot_dir'"
+      echo "Cluster: $$CLUSTER, Test mode: $TEST_MODE, Local Snapshot Dir: '$$local_snapshot_dir'"
 
   - label: ":memo: Annotate retry parameters"
     depends_on: "setup-env-init"
@@ -40,6 +40,7 @@ steps:
         If you need to retry the build, use the following parameters:
 
         \`\`\`
+        CLUSTER=$$CLUSTER
         TEST_MODE=$TEST_MODE
         \`\`\`
         EOF
@@ -47,13 +48,14 @@ steps:
   - wait: ~
 
   - label: ":calendar: Schedule"
-    concurrency_group: 'solana-snapshot-parser/fetch'
+    concurrency_group: 'solana-snapshot-parser/fetch-${CLUSTER-mainnet}'
     concurrency: 1
     commands:
     - |
-      max_processed_epoch=$(gcloud storage ls "$GCLOUD_SNAPSHOTS/**/stakes.json" | awk -F / '{print $$4}' | sort -nr | head -n 1)
+      gcloud_snapshots=$(./scripts/cluster-config.bash "$$CLUSTER" GCLOUD_SNAPSHOTS)
+      max_processed_epoch=$(gcloud storage ls "$$gcloud_snapshots/**/stakes.json" | awk -F / '{print $$4}' | sort -nr | head -n 1)
       max_processed_epoch="$${max_processed_epoch%%[^0-9]*}"
-      max_available_gcloud=$(gcloud storage ls "$GCLOUD_SNAPSHOTS/**/*.tar.zst" | awk -F / '{print $$4}' | sort -nr | head -n 1)
+      max_available_gcloud=$(gcloud storage ls "$$gcloud_snapshots/**/*.tar.zst" | awk -F / '{print $$4}' | sort -nr | head -n 1)
       max_available_gcloud="$${max_available_gcloud%%[^0-9]*}"
       local_snapshot_dir=$(buildkite-agent meta-data get local_snapshot_dir)
       max_available_local=$(find "$$local_snapshot_dir" -name 'snapshot-*.tar.zst' -printf '%h\n' 2>/dev/null | awk -F / '{print $$NF}' | sort -nr | head -n 1)
@@ -66,6 +68,7 @@ steps:
 
       test_mode=$([[ -n "$TEST_MODE" && "$TEST_MODE" != "null" ]] && echo " [Test Mode]" || echo "")
 
+      echo cluster: $$CLUSTER
       echo max_processed_epoch: $$max_processed_epoch
       echo max_available_gcloud: $$max_available_gcloud
       echo max_available_local: $$max_available_local
@@ -73,11 +76,12 @@ steps:
       (( $$max_processed_epoch < $$max_available_epoch )) && cat <<EOF | buildkite-agent pipeline upload
       steps:
         - trigger: "solana-snapshot-parser"
-          label: ":rocket: Trigger$${test_mode}: Fetch Solana snapshot ($$max_available_epoch)"
+          label: ":rocket: Trigger$${test_mode}: Fetch Solana snapshot $$CLUSTER ($$max_available_epoch)"
           async: false
           build:
             branch: $$BUILDKITE_BRANCH
             env:
+              CLUSTER: $$CLUSTER
               EPOCH: $$max_available_epoch
               TEST_MODE: $TEST_MODE
               LOCAL_SNAPSHOT_DIR: $$local_snapshot_dir
@@ -88,5 +92,5 @@ steps:
   - wait: ~
 
   - command: echo "End of concurrency gate <--"
-    concurrency_group: 'solana-snapshot-parser/scheduler'
+    concurrency_group: 'solana-snapshot-parser/scheduler-${CLUSTER-mainnet}'
     concurrency: 1
