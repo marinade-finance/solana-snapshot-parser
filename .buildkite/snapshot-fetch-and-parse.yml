@@ -97,7 +97,6 @@ steps:
     - epoch=$(buildkite-agent meta-data get epoch)
     - local_snapshot_dir=$(buildkite-agent meta-data get local_snapshot_dir)
     - working_dir=$(./scripts/cluster-config.bash "$$CLUSTER" WORKING_DIR)
-    - local_snapshot_cp_args=$(./scripts/cluster-config.bash "$$CLUSTER" LOCAL_SNAPSHOT_CP_ARGS)
     - |
       mkdir -p "$$working_dir"
       snapshot_dir=$(mktemp --directory -p "$$working_dir" "snapshot-$$epoch-$(date +%s)-XXXXXX")
@@ -106,7 +105,7 @@ steps:
       local_snapshot=$(find $$local_snapshot_dir/*/$$epoch/ -name 'snapshot-*.tar.zst' 2>/dev/null | head -1)
       if [[ -n "$$local_snapshot" ]]; then
         echo "Found local snapshot at: $$local_snapshot"
-        cp $$local_snapshot_cp_args -- "$$local_snapshot" "$$snapshot_dir/"
+        cp -- "$$local_snapshot" "$$snapshot_dir/"
         buildkite-agent meta-data set --redacted-vars="" snapshot_local "true"
       else
         echo "No local snapshot found, using temp dir: $$snapshot_dir"
