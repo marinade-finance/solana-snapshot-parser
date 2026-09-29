@@ -80,6 +80,7 @@ steps:
           async: false
           build:
             branch: $$BUILDKITE_BRANCH
+            message: "$$CLUSTER$${test_mode}: Fetch Solana snapshot ($$max_available_epoch)"
             env:
               CLUSTER: $$CLUSTER
               EPOCH: $$max_available_epoch
