@@ -1,7 +1,9 @@
 use crate::jito_priority_fee::fetch_jito_priority_fee_metas;
 use {
     crate::{
-        inflation_rewards_points::{alpenglow_epoch, points_by_vote_account, AlpenglowEpochType},
+        inflation_rewards_points::{
+            alpenglow_epoch, points_by_vote_account, AlpenglowEpochType, AG_MIGRATION_EPOCH_CREDIT,
+        },
         jito_mev::fetch_jito_mev_metas,
     },
     agave_feature_set::FeatureSnapshot,
@@ -58,6 +60,11 @@ pub struct ValidatorMeta {
     // agave's Tower points over all delegations, missed epochs too; null after the migration epoch
     #[serde(default, with = "option_u128_string_conversion")]
     pub inflation_rewards_points: Option<u128>,
+    // credits carries alpenglow_credits from the migration epoch on and tower_credits before it
+    #[serde(default)]
+    pub tower_credits: Option<u64>,
+    #[serde(default)]
+    pub alpenglow_credits: Option<u64>,
 }
 
 impl Ord for ValidatorMeta {
@@ -185,7 +192,7 @@ struct VoteAccountMeta {
     vote_account: Pubkey,
     commission: u8,
     stake: u64,
-    credits: u64,
+    credits: EpochCredits,
     inflation_rewards_collector: Option<Pubkey>,
     inflation_rewards_commission_bps: u16,
     inflation_rewards_commission_bps_is_v4: bool,
@@ -202,6 +209,49 @@ struct VoteAccountMetaCollection {
     commission_vintage_live_state_fallbacks: usize,
     leader_schedule_vote_accounts_absent_at_slot: usize,
     inflation_rewards_unadmitted_at_slot: usize,
+}
+
+#[derive(Clone, Copy)]
+struct EpochCredits {
+    tower: Option<u64>,
+    alpenglow: Option<u64>,
+}
+
+impl EpochCredits {
+    // the migration epoch holds a Tower entry and an Alpenglow entry for the epoch, so credits() is not its delta
+    fn of(vote_state_view: &VoteStateView, epoch: Epoch, regime: AlpenglowEpochType) -> Self {
+        // the marker scrolls off the 64-entry history, and an account idle through the migration never gets one
+        let mut after_marker = regime == AlpenglowEpochType::Alpenglow;
+        let mut credits = Self {
+            tower: None,
+            alpenglow: None,
+        };
+        for item in vote_state_view.epoch_credits_iter() {
+            let entry: (Epoch, u64, u64) = item.into();
+            if entry == AG_MIGRATION_EPOCH_CREDIT {
+                after_marker = true;
+                continue;
+            }
+            let (entry_epoch, final_credits, initial_credits) = entry;
+            if entry_epoch == epoch {
+                let part = if after_marker {
+                    &mut credits.alpenglow
+                } else {
+                    &mut credits.tower
+                };
+                part.get_or_insert(final_credits - initial_credits);
+            }
+        }
+        credits
+    }
+
+    fn published(&self, regime: AlpenglowEpochType) -> u64 {
+        match regime {
+            AlpenglowEpochType::Tower => self.tower,
+            AlpenglowEpochType::Migration | AlpenglowEpochType::Alpenglow => self.alpenglow,
+        }
+        .unwrap_or(0)
+    }
 }
 
 struct InflationRewardsCommission {
@@ -335,6 +385,7 @@ fn fetch_vote_account_metas<'a>(
     epoch_vote_accounts: impl Fn(Epoch) -> Option<&'a VoteAccountsHashMap>,
     admission: Option<AdmissionFilter<'_>>,
     epoch: Epoch,
+    regime: AlpenglowEpochType,
 ) -> VoteAccountMetaCollection {
     let commission_source = CommissionVintageSource::new(epoch_vote_accounts, epoch);
     let commission_vintage = commission_source.vintage();
@@ -345,16 +396,7 @@ fn fetch_vote_account_metas<'a>(
 
     for (pubkey, (stake, vote_account)) in live_vote_accounts.iter() {
         let vote_state_view = vote_account.vote_state_view();
-        let credits = vote_state_view
-            .epoch_credits_iter()
-            .find_map(|item| {
-                if item.epoch() == epoch {
-                    Some(vote_state_view.credits() - item.prev_credits())
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(0);
+        let credits = EpochCredits::of(vote_state_view, epoch, regime);
 
         // both counters are of the staked population: SIMD-0357 filtering keeps every unstaked
         // account out of either snapshot, and the payout applies no commission of theirs anyway
@@ -487,6 +529,7 @@ pub fn generate_validator_collection(
             admitted: stakes.vote_accounts().as_ref(),
         }),
         epoch,
+        alpenglow_epoch_type,
     );
     let collector_vintage = VoteStateVintage::from_live_stakes_cache(epoch);
     let inflation_rewards_points = if alpenglow_epoch_type.pays_tower_points() {
@@ -544,7 +587,7 @@ pub fn generate_validator_collection(
                 jito_priority_fee_commission: priority_fee.0,
                 jito_priority_fee_lamports: priority_fee.1,
                 stake: vote_account_meta.stake,
-                credits: vote_account_meta.credits,
+                credits: vote_account_meta.credits.published(alpenglow_epoch_type),
                 inflation_rewards_collector: vote_account_meta.inflation_rewards_collector,
                 inflation_rewards_commission_bps: Some(
                     vote_account_meta.inflation_rewards_commission_bps,
@@ -562,6 +605,8 @@ pub fn generate_validator_collection(
                         .copied()
                         .unwrap_or(0)
                 }),
+                tower_credits: vote_account_meta.credits.tower,
+                alpenglow_credits: vote_account_meta.credits.alpenglow,
             }
         })
         .collect::<Vec<_>>();
@@ -746,6 +791,7 @@ mod tests {
             |epoch| epoch_stakes.get(&epoch),
             None,
             EPOCH,
+            AlpenglowEpochType::Tower,
         )
     }
 
@@ -758,6 +804,7 @@ mod tests {
             |_| None,
             Some(AdmissionFilter { admitted }),
             EPOCH,
+            AlpenglowEpochType::Tower,
         )
     }
 
@@ -1127,6 +1174,87 @@ mod tests {
         );
     }
 
+    const MARKER: (Epoch, u64, u64) = AG_MIGRATION_EPOCH_CREDIT;
+
+    fn credits_in(
+        regime: AlpenglowEpochType,
+        epoch_credits: Vec<(Epoch, u64, u64)>,
+    ) -> (u64, EpochCredits) {
+        let versions = VoteStateVersions::new_v4(VoteStateV4 {
+            epoch_credits,
+            ..v4_state(700)
+        });
+        let live = vote_accounts([(VOTE_ACCOUNT, versions)]);
+        let collection = fetch_vote_account_metas(&live, |_| None, None, EPOCH, regime);
+        let credits = meta_of(&collection, &VOTE_ACCOUNT).credits;
+        (credits.published(regime), credits)
+    }
+
+    #[test]
+    fn a_tower_epoch_publishes_the_tower_delta_as_before() {
+        let history = vec![(EPOCH - 1, 1_000, 0), (EPOCH, 2_500, 1_000)];
+        let old_formula = 2_500 - 1_000;
+
+        let (credits, parts) = credits_in(AlpenglowEpochType::Tower, history);
+
+        assert_eq!(credits, old_formula);
+        assert_eq!((parts.tower, parts.alpenglow), (Some(old_formula), None));
+    }
+
+    #[test]
+    fn an_alpenglow_epoch_publishes_the_lamport_delta_past_the_marker() {
+        let history = vec![
+            (EPOCH - 2, 1_000, 0),
+            MARKER,
+            (EPOCH - 1, 5_000, 1_000),
+            (EPOCH, 12_000, 5_000),
+        ];
+
+        let (credits, parts) = credits_in(AlpenglowEpochType::Alpenglow, history);
+
+        assert_eq!(credits, 7_000);
+        assert_eq!((parts.tower, parts.alpenglow), (None, Some(7_000)));
+    }
+
+    #[test]
+    fn the_migration_epoch_publishes_both_parts_and_credits_the_alpenglow_one() {
+        let (t0, t1, a) = (1_000, 1_800, 50_000);
+        let history = vec![(EPOCH, t1, t0), MARKER, (EPOCH, a + t1, t1)];
+
+        let (credits, parts) = credits_in(AlpenglowEpochType::Migration, history);
+
+        assert_eq!(parts.tower, Some(t1 - t0));
+        assert_eq!(parts.alpenglow, Some(a));
+        assert_eq!(
+            credits, a,
+            "the Tower and the lamport parts are never summed"
+        );
+    }
+
+    #[test]
+    fn a_migration_epoch_ending_on_the_marker_publishes_no_alpenglow_part_and_zero_credits() {
+        let history = vec![(EPOCH - 1, 1_000, 0), (EPOCH, 1_800, 1_000), MARKER];
+
+        let (credits, parts) = credits_in(AlpenglowEpochType::Migration, history);
+
+        assert_eq!(parts.tower, Some(800));
+        assert_eq!(parts.alpenglow, None);
+        assert_eq!(
+            credits, 0,
+            "credits() of a history ending on the marker is u64::MAX and must never leak"
+        );
+    }
+
+    #[test]
+    fn an_alpenglow_epoch_whose_marker_scrolled_off_still_publishes_the_lamport_delta() {
+        let history = vec![(EPOCH - 1, 5_000, 1_000), (EPOCH, 12_000, 5_000)];
+
+        let (credits, parts) = credits_in(AlpenglowEpochType::Alpenglow, history);
+
+        assert_eq!(credits, 7_000);
+        assert_eq!((parts.tower, parts.alpenglow), (None, Some(7_000)));
+    }
+
     #[test]
     fn the_legacy_commission_stays_the_lossy_percent_of_the_v4_basis_points() {
         assert_eq!(vote_state_view(v4(733)).commission(), 7);
@@ -1307,6 +1435,8 @@ mod tests {
             pending_delegator_rewards: Some(987_654_321),
             inflation_rewards_admitted: Some(true),
             inflation_rewards_points: Some(29_503_827_922_340_690_000_000),
+            tower_credits: Some(789),
+            alpenglow_credits: None,
         }
     }
 
@@ -1331,6 +1461,8 @@ mod tests {
                 "pending_delegator_rewards": 987_654_321,
                 "inflation_rewards_admitted": true,
                 "inflation_rewards_points": "29503827922340690000000",
+                "tower_credits": 789,
+                "alpenglow_credits": null,
             })
         );
     }
@@ -1367,6 +1499,8 @@ mod tests {
                 "pending_delegator_rewards": null,
                 "inflation_rewards_admitted": null,
                 "inflation_rewards_points": null,
+                "tower_credits": 789,
+                "alpenglow_credits": null,
             })
         );
     }
@@ -1504,6 +1638,7 @@ mod tests {
             meta.inflation_rewards_points, None,
             "a file that published no points must not be read as zero points"
         );
+        assert_eq!((meta.tower_credits, meta.alpenglow_credits), (None, None));
     }
 
     const BANK_EPOCH: Epoch = 2;
@@ -1596,8 +1731,10 @@ mod tests {
 
         let migration_slot =
             |bank: &Bank| Some(bank.epoch_schedule().get_first_slot_in_epoch(BANK_EPOCH) + 1);
-        let (migration, certified_slot) =
-            collection_certified_at(migration_slot, vec![(BANK_EPOCH, 1_000, 0)]);
+        let (migration, certified_slot) = collection_certified_at(
+            migration_slot,
+            vec![(BANK_EPOCH, 1_000, 0), MARKER, (BANK_EPOCH, 5_000, 1_000)],
+        );
         assert_eq!(
             migration.alpenglow_epoch_type,
             Some(AlpenglowEpochType::Migration)
@@ -1611,6 +1748,15 @@ mod tests {
                 .all(|meta| meta.inflation_rewards_points.is_some()),
             "the migration epoch still pays its Tower slots by Tower points"
         );
+        assert!(migration.validator_metas.iter().all(|meta| (
+            meta.credits,
+            meta.tower_credits,
+            meta.alpenglow_credits
+        ) == (
+            4_000,
+            Some(1_000),
+            Some(4_000)
+        )));
 
         let alpenglow_slot = |bank: &Bank| {
             Some(

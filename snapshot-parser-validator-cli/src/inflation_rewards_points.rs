@@ -13,7 +13,7 @@ use {
 };
 
 // agave_votor_messages::migration::AG_MIGRATION_EPOCH_CREDIT, past which epoch_credits are Alpenglow's
-const AG_MIGRATION_EPOCH_CREDIT: (Epoch, u64, u64) = (Epoch::MAX, u64::MAX, u64::MAX);
+pub(crate) const AG_MIGRATION_EPOCH_CREDIT: (Epoch, u64, u64) = (Epoch::MAX, u64::MAX, u64::MAX);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
