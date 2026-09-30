@@ -65,6 +65,9 @@ pub struct ValidatorMeta {
     pub tower_credits: Option<u64>,
     #[serde(default)]
     pub alpenglow_credits: Option<u64>,
+    // the state at slot verbatim, the (MAX, MAX, MAX) migration marker included
+    #[serde(default)]
+    pub epoch_credits: Option<Vec<(Epoch, u64, u64)>>,
 }
 
 impl Ord for ValidatorMeta {
@@ -193,6 +196,7 @@ struct VoteAccountMeta {
     commission: u8,
     stake: u64,
     credits: EpochCredits,
+    epoch_credits: Vec<(Epoch, u64, u64)>,
     inflation_rewards_collector: Option<Pubkey>,
     inflation_rewards_commission_bps: u16,
     inflation_rewards_commission_bps_is_v4: bool,
@@ -432,6 +436,10 @@ fn fetch_vote_account_metas<'a>(
             commission: vote_state_view.commission(),
             stake: *stake,
             credits,
+            epoch_credits: vote_state_view
+                .epoch_credits_iter()
+                .map(Into::into)
+                .collect(),
             inflation_rewards_collector: collector_fields
                 .as_ref()
                 .map(|fields| fields.inflation_rewards_collector),
@@ -607,6 +615,7 @@ pub fn generate_validator_collection(
                 }),
                 tower_credits: vote_account_meta.credits.tower,
                 alpenglow_credits: vote_account_meta.credits.alpenglow,
+                epoch_credits: Some(vote_account_meta.epoch_credits),
             }
         })
         .collect::<Vec<_>>();
@@ -1191,6 +1200,36 @@ mod tests {
     }
 
     #[test]
+    fn the_raw_history_is_published_verbatim_with_the_marker() {
+        let history = vec![(EPOCH - 1, 1_000, 0), (EPOCH, 1_800, 1_000), MARKER];
+        let versions = VoteStateVersions::new_v4(VoteStateV4 {
+            epoch_credits: history.clone(),
+            ..v4_state(700)
+        });
+        let live = vote_accounts([(VOTE_ACCOUNT, versions)]);
+
+        let collection =
+            fetch_vote_account_metas(&live, |_| None, None, EPOCH, AlpenglowEpochType::Migration);
+
+        assert_eq!(meta_of(&collection, &VOTE_ACCOUNT).epoch_credits, history);
+    }
+
+    #[test]
+    fn the_marker_serializes_as_u64_max_and_round_trips() {
+        let meta = ValidatorMeta {
+            epoch_credits: Some(vec![MARKER]),
+            ..validator_meta()
+        };
+
+        let json = serde_json::to_value(&meta).unwrap();
+        assert_eq!(
+            json["epoch_credits"],
+            serde_json::json!([[u64::MAX, u64::MAX, u64::MAX]])
+        );
+        assert_eq!(serde_json::from_value::<ValidatorMeta>(json).unwrap(), meta);
+    }
+
+    #[test]
     fn a_tower_epoch_publishes_the_tower_delta_as_before() {
         let history = vec![(EPOCH - 1, 1_000, 0), (EPOCH, 2_500, 1_000)];
         let old_formula = 2_500 - 1_000;
@@ -1437,6 +1476,7 @@ mod tests {
             inflation_rewards_points: Some(29_503_827_922_340_690_000_000),
             tower_credits: Some(789),
             alpenglow_credits: None,
+            epoch_credits: Some(vec![(EPOCH - 1, 1_000, 0), (EPOCH, 1_789, 1_000)]),
         }
     }
 
@@ -1463,6 +1503,7 @@ mod tests {
                 "inflation_rewards_points": "29503827922340690000000",
                 "tower_credits": 789,
                 "alpenglow_credits": null,
+                "epoch_credits": [[899, 1000, 0], [900, 1789, 1000]],
             })
         );
     }
@@ -1501,6 +1542,7 @@ mod tests {
                 "inflation_rewards_points": null,
                 "tower_credits": 789,
                 "alpenglow_credits": null,
+                "epoch_credits": [[899, 1000, 0], [900, 1789, 1000]],
             })
         );
     }
@@ -1639,6 +1681,10 @@ mod tests {
             "a file that published no points must not be read as zero points"
         );
         assert_eq!((meta.tower_credits, meta.alpenglow_credits), (None, None));
+        assert_eq!(
+            meta.epoch_credits, None,
+            "a file that published no history must not be read as an empty one"
+        );
     }
 
     const BANK_EPOCH: Epoch = 2;
