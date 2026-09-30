@@ -1,7 +1,7 @@
 use crate::jito_priority_fee::fetch_jito_priority_fee_metas;
 use {
     crate::{
-        inflation_rewards_points::{pays_tower_points, points_by_vote_account},
+        inflation_rewards_points::{alpenglow_epoch, points_by_vote_account, AlpenglowEpochType},
         jito_mev::fetch_jito_mev_metas,
     },
     agave_feature_set::FeatureSnapshot,
@@ -12,7 +12,7 @@ use {
     snapshot_parser::serde_serialize::pubkey_string_conversion,
     snapshot_parser::stake_activation::StakeActivation,
     snapshot_parser::utils::lamports_to_sol,
-    solana_program::pubkey::Pubkey,
+    solana_program::{clock::Slot, pubkey::Pubkey},
     solana_runtime::bank::Bank,
     solana_sdk::{account::AccountSharedData, epoch_info::EpochInfo},
     solana_stake_interface::stake_history::Epoch,
@@ -175,6 +175,10 @@ pub struct ValidatorMetaCollection {
     pub inflation_rewards_unadmitted_at_slot: usize,
     #[serde(default)]
     pub features: SnapshotFeatures,
+    #[serde(default)]
+    pub alpenglow_epoch_type: Option<AlpenglowEpochType>,
+    #[serde(default)]
+    pub alpenglow_migration_slot: Option<Slot>,
 }
 
 struct VoteAccountMeta {
@@ -463,6 +467,7 @@ pub fn generate_validator_collection(
     let validator_rewards =
         (validator_rate * capitalization as f64 * epoch_duration_in_years) as u64;
 
+    let (alpenglow_epoch_type, alpenglow_migration_slot) = alpenglow_epoch(bank);
     let live_vote_accounts = bank.vote_accounts();
     let features = SnapshotFeatures::from_feature_snapshot(bank.feature_set.snapshot());
     let admitted_stakes = features
@@ -484,7 +489,7 @@ pub fn generate_validator_collection(
         epoch,
     );
     let collector_vintage = VoteStateVintage::from_live_stakes_cache(epoch);
-    let inflation_rewards_points = if pays_tower_points(bank) {
+    let inflation_rewards_points = if alpenglow_epoch_type.pays_tower_points() {
         Some(points_by_vote_account(
             stake_accounts,
             &live_vote_accounts,
@@ -621,6 +626,10 @@ pub fn generate_validator_collection(
         );
     }
     info!("Snapshot features: {:?}", features);
+    info!(
+        "Alpenglow epoch type: {:?}, migration slot: {:?}",
+        alpenglow_epoch_type, alpenglow_migration_slot
+    );
 
     if total_credits == 0 {
         anyhow::bail!(
@@ -647,6 +656,8 @@ pub fn generate_validator_collection(
         leader_schedule_vote_accounts_absent_at_slot,
         inflation_rewards_unadmitted_at_slot,
         features,
+        alpenglow_epoch_type: Some(alpenglow_epoch_type),
+        alpenglow_migration_slot,
     })
 }
 
@@ -654,12 +665,18 @@ pub fn generate_validator_collection(
 mod tests {
     use {
         super::*,
-        crate::utils::vote_account_fixture::staked_vote_accounts,
+        crate::utils::vote_account_fixture::{
+            set_epoch_credits, set_genesis_certificate, staked_vote_accounts,
+        },
         agave_feature_set::FeatureSet,
+        solana_runtime::{
+            bank_forks::BankForks,
+            genesis_utils::{create_genesis_config_with_vote_accounts, ValidatorVoteKeypairs},
+        },
         solana_vote_interface::state::{
             VoteStateV3, VoteStateV4, VoteStateVersions, BLS_PUBLIC_KEY_COMPRESSED_SIZE,
         },
-        std::collections::HashMap,
+        std::{collections::HashMap, sync::RwLock},
     };
 
     const EPOCH: Epoch = 900;
@@ -1379,6 +1396,8 @@ mod tests {
                 inflation_rewards_validator_admission_ticket_active: Some(true),
                 alpenglow_active: None,
             },
+            alpenglow_epoch_type: Some(AlpenglowEpochType::Migration),
+            alpenglow_migration_slot: Some(950),
         };
 
         let mut value = serde_json::to_value(collection).unwrap();
@@ -1413,6 +1432,8 @@ mod tests {
                     "inflation_rewards_validator_admission_ticket_active": true,
                     "alpenglow_active": null,
                 },
+                "alpenglow_epoch_type": "migration",
+                "alpenglow_migration_slot": 950,
             })
         );
     }
@@ -1462,6 +1483,14 @@ mod tests {
         assert_eq!(collection.commission_vintage_live_state_fallbacks, 0);
         assert_eq!(collection.leader_schedule_vote_accounts_absent_at_slot, 0);
         assert_eq!(collection.features, SnapshotFeatures::default());
+        assert_eq!(
+            (
+                collection.alpenglow_epoch_type,
+                collection.alpenglow_migration_slot
+            ),
+            (None, None),
+            "a file that recorded no regime must not claim Tower"
+        );
         let meta = &collection.validator_metas[0];
         assert_eq!(meta.commission, 7);
         assert_eq!(meta.stake, 456);
@@ -1475,6 +1504,131 @@ mod tests {
             meta.inflation_rewards_points, None,
             "a file that published no points must not be read as zero points"
         );
+    }
+
+    const BANK_EPOCH: Epoch = 2;
+
+    fn end_of_epoch_bank(
+        epoch_credits: Vec<(Epoch, u64, u64)>,
+    ) -> (Arc<Bank>, Arc<RwLock<BankForks>>) {
+        let keypairs: Vec<_> = (0..3).map(|_| ValidatorVoteKeypairs::new_rand()).collect();
+        let genesis = create_genesis_config_with_vote_accounts(
+            1_000_000_000_000,
+            &keypairs,
+            vec![1_000_000_000; 3],
+        )
+        .genesis_config;
+        let (bank0, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis);
+        let bank = Bank::new_from_parent_with_bank_forks(
+            &bank_forks,
+            bank0.clone(),
+            *bank0.leader(),
+            bank0.epoch_schedule().get_last_slot_in_epoch(BANK_EPOCH),
+        );
+        for vote_pubkey in bank.vote_accounts().keys() {
+            set_epoch_credits(&bank, vote_pubkey, epoch_credits.clone());
+        }
+        (bank, bank_forks)
+    }
+
+    fn collection_of(bank: &Arc<Bank>) -> ValidatorMetaCollection {
+        bank.freeze();
+        let stake_accounts = bank
+            .get_program_accounts(&solana_stake_interface::program::ID)
+            .unwrap();
+        let tip_distribution_accounts: Vec<_> = bank
+            .vote_accounts()
+            .keys()
+            .map(|vote_account| tip_distribution_account(vote_account, BANK_EPOCH))
+            .collect();
+        generate_validator_collection(
+            bank,
+            &stake_accounts,
+            &tip_distribution_accounts,
+            &[],
+            false,
+        )
+        .unwrap()
+    }
+
+    // the utils::jito_parser offsets of a TipDistributionAccount with no merkle root
+    fn tip_distribution_account(
+        vote_account: &Pubkey,
+        epoch: Epoch,
+    ) -> (Pubkey, AccountSharedData) {
+        let mut data = crate::jito_mev::TIP_DISTRIBUTION_ACCOUNT_DISCRIMINATOR.to_vec();
+        data.extend_from_slice(vote_account.as_ref());
+        data.extend_from_slice(&[0u8; 32]);
+        data.push(0);
+        data.extend_from_slice(&epoch.to_le_bytes());
+        data.extend_from_slice(&800u16.to_le_bytes());
+        let account = solana_sdk::account::Account {
+            lamports: 1,
+            data,
+            ..solana_sdk::account::Account::default()
+        };
+        (Pubkey::new_unique(), account.into())
+    }
+
+    fn collection_certified_at(
+        genesis_certificate_slot: impl Fn(&Bank) -> Option<Slot>,
+        epoch_credits: Vec<(Epoch, u64, u64)>,
+    ) -> (ValidatorMetaCollection, Option<Slot>) {
+        let (bank, _bank_forks) = end_of_epoch_bank(epoch_credits);
+        let certified_slot = genesis_certificate_slot(&bank);
+        if let Some(slot) = certified_slot {
+            set_genesis_certificate(&bank, slot);
+        }
+        (collection_of(&bank), certified_slot)
+    }
+
+    #[test]
+    fn the_collection_publishes_the_regime_its_genesis_certificate_sets() {
+        let (tower, _) = collection_certified_at(|_| None, vec![(BANK_EPOCH, 1_000, 0)]);
+        assert_eq!(
+            (tower.alpenglow_epoch_type, tower.alpenglow_migration_slot),
+            (Some(AlpenglowEpochType::Tower), None)
+        );
+        assert!(tower
+            .validator_metas
+            .iter()
+            .all(|meta| meta.inflation_rewards_points.is_some()));
+
+        let migration_slot =
+            |bank: &Bank| Some(bank.epoch_schedule().get_first_slot_in_epoch(BANK_EPOCH) + 1);
+        let (migration, certified_slot) =
+            collection_certified_at(migration_slot, vec![(BANK_EPOCH, 1_000, 0)]);
+        assert_eq!(
+            migration.alpenglow_epoch_type,
+            Some(AlpenglowEpochType::Migration)
+        );
+        assert!(certified_slot.is_some());
+        assert_eq!(migration.alpenglow_migration_slot, certified_slot);
+        assert!(
+            migration
+                .validator_metas
+                .iter()
+                .all(|meta| meta.inflation_rewards_points.is_some()),
+            "the migration epoch still pays its Tower slots by Tower points"
+        );
+
+        let alpenglow_slot = |bank: &Bank| {
+            Some(
+                bank.epoch_schedule()
+                    .get_first_slot_in_epoch(BANK_EPOCH - 1),
+            )
+        };
+        let (alpenglow, certified_slot) =
+            collection_certified_at(alpenglow_slot, vec![(BANK_EPOCH, 1_000, 0)]);
+        assert_eq!(
+            alpenglow.alpenglow_epoch_type,
+            Some(AlpenglowEpochType::Alpenglow)
+        );
+        assert_eq!(alpenglow.alpenglow_migration_slot, certified_slot);
+        assert!(alpenglow
+            .validator_metas
+            .iter()
+            .all(|meta| meta.inflation_rewards_points.is_none()));
     }
 
     // past u64, so a float or a u64 on either side of the file would corrupt it
