@@ -2394,6 +2394,63 @@ mod tests {
         assert_eq!(vat_config, VatConfig::default());
     }
 
+    // VALIDATORS_JSON=<file> cargo test -- --ignored, on a parsed testnet epoch after the migration one
+    #[test]
+    #[ignore = "reads a parsed validators.json named by VALIDATORS_JSON"]
+    fn a_parsed_testnet_alpenglow_epoch_publishes_every_raw_input() {
+        let path =
+            std::env::var("VALIDATORS_JSON").expect("VALIDATORS_JSON names the file to check");
+        let collection: ValidatorMetaCollection =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let metas = &collection.validator_metas;
+
+        assert_eq!(
+            collection.alpenglow_epoch_type,
+            Some(AlpenglowEpochType::Alpenglow)
+        );
+        assert!(collection.alpenglow_migration_slot.is_some());
+        assert_eq!(collection.features.alpenglow_active, Some(true));
+        assert!(metas.iter().all(|meta| meta.credits.is_none()
+            && meta.tower_credits.is_none()
+            && meta.inflation_rewards_points.is_none()
+            && meta.epoch_credits.is_some()));
+        assert!(metas
+            .iter()
+            .any(|meta| meta.alpenglow_credits.is_some_and(|credits| credits > 0)));
+        assert_eq!(
+            collection.vat_config.vat_lamports_per_epoch,
+            Some(800_000_000),
+            "testnet burns this since slot 446348256"
+        );
+        assert_eq!(
+            collection
+                .epoch_inflation_account
+                .as_ref()
+                .map(|account| account.current.epoch),
+            Some(collection.epoch)
+        );
+        let staked_in_committee: u64 = metas.iter().filter_map(|meta| meta.epoch_stake).sum();
+        assert!(collection.epoch_total_stake.unwrap() >= staked_in_committee);
+
+        let mut ranks: Vec<u16> = metas
+            .iter()
+            .filter_map(|meta| meta.epoch_stake_rank)
+            .collect();
+        ranks.sort();
+        assert!(!ranks.is_empty());
+        assert!(
+            ranks.windows(2).all(|pair| pair[0] < pair[1]),
+            "a rank is held twice"
+        );
+        if collection.leader_schedule_vote_accounts_absent_at_slot == 0 {
+            assert_eq!(
+                ranks,
+                (0..ranks.len() as u16).collect::<Vec<_>>(),
+                "with every committee member live, ranks cover 0..n without gaps"
+            );
+        }
+    }
+
     // past u64, so a float or a u64 on either side of the file would corrupt it
     #[test]
     fn points_past_u64_round_trip_through_json_as_a_string() {
