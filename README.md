@@ -76,7 +76,10 @@ whose commission a consumer could otherwise read as burned.
 
 `inflation_rewards_points` is the vote account's share of what agave divides the
 epoch's inflation by, summed over its delegations. It is a decimal string because
-it outgrows a JSON number.
+it outgrows a JSON number. `epoch_credits` is a list of
+`[epoch, credits, prev_credits]` decimal strings for the same reason: its
+migration marker is `u64::MAX` three times, which a double cannot hold, so parse
+each value as a bigint (`BigInt` in JS, `u64` in Rust).
 
 It is not `stake * credits`. A stake agave left unpaid - while SIMD-0357 refused
 its validator, for one - keeps its `credits_observed`, and is paid for every epoch

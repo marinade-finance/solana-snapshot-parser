@@ -4,7 +4,12 @@ use {
         consensus_message::Block,
     },
     solana_program::{clock::Slot, pubkey::Pubkey},
-    solana_runtime::bank::Bank,
+    solana_runtime::{
+        bank::Bank,
+        genesis_utils::{
+            create_genesis_config_with_vote_accounts, GenesisConfigInfo, ValidatorVoteKeypairs,
+        },
+    },
     solana_sdk::account::{AccountSharedData, ReadableAccount},
     solana_stake_interface::stake_history::Epoch,
     solana_vote::vote_account::{VoteAccount, VoteAccountsHashMap},
@@ -57,6 +62,11 @@ pub fn set_epoch_credits(bank: &Bank, vote_pubkey: &Pubkey, epoch_credits: Vec<(
         ..*state
     });
     store_state(bank, vote_pubkey, &account, &versions);
+}
+
+pub fn one_validator_genesis() -> GenesisConfigInfo {
+    let keypairs = [ValidatorVoteKeypairs::new_rand()];
+    create_genesis_config_with_vote_accounts(1_000_000_000_000, &keypairs, vec![1_000_000_000])
 }
 
 pub fn set_genesis_certificate(bank: &Bank, slot: Slot) {

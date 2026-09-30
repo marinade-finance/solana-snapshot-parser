@@ -4,11 +4,11 @@ use {
     solana_runtime::bank::Bank,
     solana_sdk::account::ReadableAccount,
     solana_stake_interface::stake_history::Epoch,
-    wincode::{SchemaRead, SchemaWrite},
+    wincode::SchemaRead,
 };
 
 // agave's crate-private EpochInflationState; wincode is positional, so the field order must stay agave's
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, SchemaRead)]
 pub struct EpochInflationState {
     pub max_possible_validator_reward: u64,
     pub slots_per_epoch: u64,
@@ -16,7 +16,7 @@ pub struct EpochInflationState {
 }
 
 // agave's EpochInflationAccountState, rewritten at every epoch start while alpenglow is active
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, SchemaRead)]
 pub struct EpochInflationAccount {
     pub current: EpochInflationState,
     pub prev: Option<EpochInflationState>,
@@ -46,10 +46,8 @@ pub fn epoch_inflation_account(bank: &Bank) -> anyhow::Result<Option<EpochInflat
 mod tests {
     use {
         super::*,
-        solana_runtime::genesis_utils::{
-            activate_alpenglow_at_genesis, create_genesis_config_with_vote_accounts,
-            GenesisConfigInfo, ValidatorVoteKeypairs,
-        },
+        crate::utils::vote_account_fixture::one_validator_genesis,
+        solana_runtime::genesis_utils::{activate_alpenglow_at_genesis, GenesisConfigInfo},
         solana_sdk::account::AccountSharedData,
         std::sync::Arc,
     };
@@ -103,12 +101,7 @@ mod tests {
     }
 
     fn genesis(alpenglow: bool) -> GenesisConfigInfo {
-        let keypairs = [ValidatorVoteKeypairs::new_rand()];
-        let mut genesis = create_genesis_config_with_vote_accounts(
-            1_000_000_000_000,
-            &keypairs,
-            vec![1_000_000_000],
-        );
+        let mut genesis = one_validator_genesis();
         if alpenglow {
             activate_alpenglow_at_genesis(&mut genesis.genesis_config);
         }
