@@ -15,13 +15,17 @@ use {
     snapshot_parser::stake_activation::StakeActivation,
     snapshot_parser::utils::lamports_to_sol,
     solana_program::{clock::Slot, pubkey::Pubkey},
-    solana_runtime::{bank::Bank, epoch_stakes::BLSPubkeyToRankMap},
+    solana_runtime::{
+        bank::{Bank, MAX_ALPENGLOW_VOTE_ACCOUNTS},
+        epoch_stakes::BLSPubkeyToRankMap,
+    },
     solana_sdk::{account::AccountSharedData, epoch_info::EpochInfo},
     solana_stake_interface::stake_history::Epoch,
     solana_vote::{
         vote_account::{VoteAccount, VoteAccountsHashMap},
         vote_state_view::VoteStateView,
     },
+    solana_vote_interface::state::VoteStateV4,
     std::{fmt::Debug, sync::Arc},
 };
 
@@ -201,6 +205,62 @@ pub struct ValidatorMetaCollection {
     pub alpenglow_migration_slot: Option<Slot>,
     #[serde(default)]
     pub epoch_total_stake: Option<u64>,
+    #[serde(flatten)]
+    pub vat_config: VatConfig,
+}
+
+// the bank's values at slot; the E+1 boundary filter applies the next bank's, which a feature can move
+#[derive(Clone, Deserialize, Serialize, Debug, Default, Eq, PartialEq)]
+pub struct VatConfig {
+    #[serde(default)]
+    pub minimum_vote_account_balance_for_vat: Option<u64>,
+    #[serde(default)]
+    pub vat_lamports_per_epoch: Option<u64>,
+    #[serde(default)]
+    pub max_alpenglow_vote_accounts: Option<u64>,
+}
+
+// agave's SlotParams vat_to_burn_per_epoch per slot time, 400ms down to 200ms
+const VAT_LAMPORTS_PER_EPOCH: [u64; 5] = [
+    1_600_000_000,
+    1_400_000_000,
+    1_200_000_000,
+    1_000_000_000,
+    800_000_000,
+];
+
+// agave's own term of the VAT minimum, which get_minimum_balance_for_rent_exemption lifts to at least 1
+fn vote_account_rent_exempt_minimum(bank: &Bank) -> u64 {
+    bank.rent_collector()
+        .rent
+        .minimum_balance(VoteStateV4::size_of())
+}
+
+impl VatConfig {
+    fn of(bank: &Bank) -> anyhow::Result<Self> {
+        let features = bank.feature_set.snapshot();
+        if !features.validator_admission_ticket {
+            return Ok(Self::default());
+        }
+        let minimum_vote_account_balance_for_vat = bank.minimum_vote_account_balance_for_vat();
+        let vat_lamports_per_epoch = if features.alpenglow {
+            // vat_to_burn_per_epoch is crate-private, so it is taken back out of the minimum it is added to
+            let vat_lamports_per_epoch = minimum_vote_account_balance_for_vat
+                .saturating_sub(vote_account_rent_exempt_minimum(bank));
+            anyhow::ensure!(
+                VAT_LAMPORTS_PER_EPOCH.contains(&vat_lamports_per_epoch),
+                "VAT burn of {vat_lamports_per_epoch} lamports per epoch is none of agave's {VAT_LAMPORTS_PER_EPOCH:?}; minimum_vote_account_balance_for_vat is no longer rent plus the burn"
+            );
+            Some(vat_lamports_per_epoch)
+        } else {
+            None
+        };
+        Ok(Self {
+            minimum_vote_account_balance_for_vat: Some(minimum_vote_account_balance_for_vat),
+            vat_lamports_per_epoch,
+            max_alpenglow_vote_accounts: Some(MAX_ALPENGLOW_VOTE_ACCOUNTS as u64),
+        })
+    }
 }
 
 struct VoteAccountMeta {
@@ -575,6 +635,7 @@ pub fn generate_validator_collection(
         .alpenglow_active
         .unwrap_or(false)
         .then(|| epoch_stakes.bls_pubkey_to_rank_map());
+    let vat_config = VatConfig::of(bank)?;
     let admitted_stakes = features
         .admission_filter_active()
         .then(|| bank.get_top_epoch_stakes());
@@ -744,6 +805,7 @@ pub fn generate_validator_collection(
         "Alpenglow epoch type: {:?}, migration slot: {:?}",
         alpenglow_epoch_type, alpenglow_migration_slot
     );
+    info!("VAT config: {:?}", vat_config);
 
     if total_credits == 0 {
         anyhow::bail!(
@@ -773,6 +835,7 @@ pub fn generate_validator_collection(
         alpenglow_epoch_type: Some(alpenglow_epoch_type),
         alpenglow_migration_slot,
         epoch_total_stake: Some(epoch_stakes.total_stake()),
+        vat_config,
     })
 }
 
@@ -786,7 +849,11 @@ mod tests {
         agave_feature_set::FeatureSet,
         solana_runtime::{
             bank_forks::BankForks,
-            genesis_utils::{create_genesis_config_with_vote_accounts, ValidatorVoteKeypairs},
+            genesis_utils::{
+                activate_alpenglow_at_genesis, create_genesis_config_with_vote_accounts,
+                deactivate_features, GenesisConfigInfo, ValidatorVoteKeypairs,
+            },
+            slot_params::slot_time_feature_ids,
         },
         solana_vote_interface::state::{
             VoteStateV3, VoteStateV4, VoteStateVersions, BLS_PUBLIC_KEY_COMPRESSED_SIZE,
@@ -1809,6 +1876,11 @@ mod tests {
             alpenglow_epoch_type: Some(AlpenglowEpochType::Migration),
             alpenglow_migration_slot: Some(950),
             epoch_total_stake: Some(10_000),
+            vat_config: VatConfig {
+                minimum_vote_account_balance_for_vat: Some(1_627_074_240),
+                vat_lamports_per_epoch: Some(1_600_000_000),
+                max_alpenglow_vote_accounts: Some(2_000),
+            },
         };
 
         let mut value = serde_json::to_value(collection).unwrap();
@@ -1846,6 +1918,9 @@ mod tests {
                 "alpenglow_epoch_type": "migration",
                 "alpenglow_migration_slot": 950,
                 "epoch_total_stake": 10_000,
+                "minimum_vote_account_balance_for_vat": 1_627_074_240,
+                "vat_lamports_per_epoch": 1_600_000_000,
+                "max_alpenglow_vote_accounts": 2_000,
             })
         );
     }
@@ -1904,6 +1979,7 @@ mod tests {
             "a file that recorded no regime must not claim Tower"
         );
         assert_eq!(collection.epoch_total_stake, None);
+        assert_eq!(collection.vat_config, VatConfig::default());
         let meta = &collection.validator_metas[0];
         assert_eq!(meta.commission, 7);
         assert_eq!(meta.stake, 456);
@@ -2037,6 +2113,14 @@ mod tests {
                 .all(|meta| meta.epoch_stake_rank.is_none()),
             "no rank map is built while alpenglow is inactive"
         );
+        assert_eq!(
+            (
+                tower.vat_config.vat_lamports_per_epoch,
+                tower.vat_config.max_alpenglow_vote_accounts
+            ),
+            (None, Some(2_000)),
+            "the collection carries the VAT config of its bank"
+        );
 
         let migration_slot =
             |bank: &Bank| Some(bank.epoch_schedule().get_first_slot_in_epoch(BANK_EPOCH) + 1);
@@ -2110,6 +2194,86 @@ mod tests {
             .iter()
             .all(|meta| meta.epoch_stake_bls_pubkey.is_some()
                 && meta.epoch_stake_node_pubkey.is_some()));
+    }
+
+    fn one_validator_genesis() -> GenesisConfigInfo {
+        let keypairs = [ValidatorVoteKeypairs::new_rand()];
+        create_genesis_config_with_vote_accounts(1_000_000_000_000, &keypairs, vec![1_000_000_000])
+    }
+
+    // a slot-time feature takes effect at a later epoch boundary than the one activating it
+    fn vat_config_of(genesis: &GenesisConfigInfo) -> (VatConfig, u64) {
+        let (bank0, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis.genesis_config);
+        let bank = Bank::new_from_parent_with_bank_forks(
+            &bank_forks,
+            bank0.clone(),
+            *bank0.leader(),
+            bank0.epoch_schedule().get_first_slot_in_epoch(1),
+        );
+        let rent_exempt_minimum = vote_account_rent_exempt_minimum(&bank);
+        (VatConfig::of(&bank).unwrap(), rent_exempt_minimum)
+    }
+
+    #[test]
+    fn an_alpenglow_bank_at_the_legacy_slot_time_burns_the_legacy_vat() {
+        let mut genesis = one_validator_genesis();
+        activate_alpenglow_at_genesis(&mut genesis.genesis_config);
+        deactivate_features(
+            &mut genesis.genesis_config,
+            &slot_time_feature_ids().to_vec(),
+        );
+
+        let (vat_config, rent_exempt_minimum) = vat_config_of(&genesis);
+
+        assert_eq!(
+            vat_config,
+            VatConfig {
+                minimum_vote_account_balance_for_vat: Some(rent_exempt_minimum + 1_600_000_000),
+                vat_lamports_per_epoch: Some(1_600_000_000),
+                max_alpenglow_vote_accounts: Some(2_000),
+            }
+        );
+    }
+
+    #[test]
+    fn an_alpenglow_bank_at_200ms_slots_burns_half_the_legacy_vat() {
+        let mut genesis = one_validator_genesis();
+        activate_alpenglow_at_genesis(&mut genesis.genesis_config);
+
+        let (vat_config, rent_exempt_minimum) = vat_config_of(&genesis);
+
+        assert_eq!(vat_config.vat_lamports_per_epoch, Some(800_000_000));
+        assert_eq!(
+            vat_config.minimum_vote_account_balance_for_vat,
+            Some(rent_exempt_minimum + 800_000_000)
+        );
+    }
+
+    #[test]
+    fn a_tower_bank_under_vat_burns_nothing_and_needs_only_rent() {
+        let (vat_config, rent_exempt_minimum) = vat_config_of(&one_validator_genesis());
+
+        assert_eq!(
+            vat_config,
+            VatConfig {
+                minimum_vote_account_balance_for_vat: Some(rent_exempt_minimum),
+                vat_lamports_per_epoch: None,
+                max_alpenglow_vote_accounts: Some(2_000),
+            }
+        );
+    }
+
+    #[test]
+    fn a_bank_without_vat_publishes_no_vat_config() {
+        let mut genesis = one_validator_genesis();
+        deactivate_features(
+            &mut genesis.genesis_config,
+            &vec![agave_feature_set::validator_admission_ticket::id()],
+        );
+
+        let (vat_config, _) = vat_config_of(&genesis);
+
+        assert_eq!(vat_config, VatConfig::default());
     }
 
     // past u64, so a float or a u64 on either side of the file would corrupt it
