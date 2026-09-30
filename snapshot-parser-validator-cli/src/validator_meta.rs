@@ -15,7 +15,7 @@ use {
     snapshot_parser::stake_activation::StakeActivation,
     snapshot_parser::utils::lamports_to_sol,
     solana_program::{clock::Slot, pubkey::Pubkey},
-    solana_runtime::bank::Bank,
+    solana_runtime::{bank::Bank, epoch_stakes::BLSPubkeyToRankMap},
     solana_sdk::{account::AccountSharedData, epoch_info::EpochInfo},
     solana_stake_interface::stake_history::Epoch,
     solana_vote::{
@@ -68,6 +68,16 @@ pub struct ValidatorMeta {
     // the state at slot verbatim, the (MAX, MAX, MAX) migration marker included
     #[serde(default)]
     pub epoch_credits: Option<Vec<(Epoch, u64, u64)>>,
+    // stake in epoch_stakes(epoch), the Alpenglow reward committee; None is not a member
+    #[serde(default)]
+    pub epoch_stake: Option<u64>,
+    // set only while alpenglow is active: agave's BLSPubkeyToRankMap panics on a keyless committee
+    #[serde(default)]
+    pub epoch_stake_rank: Option<u16>,
+    #[serde(default)]
+    pub epoch_stake_bls_pubkey: Option<String>,
+    #[serde(default, with = "option_pubkey_string_conversion")]
+    pub epoch_stake_node_pubkey: Option<Pubkey>,
 }
 
 impl Ord for ValidatorMeta {
@@ -189,6 +199,8 @@ pub struct ValidatorMetaCollection {
     pub alpenglow_epoch_type: Option<AlpenglowEpochType>,
     #[serde(default)]
     pub alpenglow_migration_slot: Option<Slot>,
+    #[serde(default)]
+    pub epoch_total_stake: Option<u64>,
 }
 
 struct VoteAccountMeta {
@@ -197,6 +209,7 @@ struct VoteAccountMeta {
     stake: u64,
     credits: EpochCredits,
     epoch_credits: Vec<(Epoch, u64, u64)>,
+    committee: CommitteeFields,
     inflation_rewards_collector: Option<Pubkey>,
     inflation_rewards_commission_bps: u16,
     inflation_rewards_commission_bps_is_v4: bool,
@@ -255,6 +268,32 @@ impl EpochCredits {
             AlpenglowEpochType::Migration | AlpenglowEpochType::Alpenglow => self.alpenglow,
         }
         .unwrap_or(0)
+    }
+}
+
+#[derive(Default)]
+struct CommitteeFields {
+    epoch_stake: Option<u64>,
+    epoch_stake_rank: Option<u16>,
+    epoch_stake_bls_pubkey: Option<String>,
+    epoch_stake_node_pubkey: Option<Pubkey>,
+}
+
+impl CommitteeFields {
+    // read off the committee's own vote state, never the live one
+    fn of(committee_entry: Option<&(u64, VoteAccount)>, rank: Option<u16>) -> Self {
+        let Some((stake, account)) = committee_entry else {
+            return Self::default();
+        };
+        let vote_state_view = account.vote_state_view();
+        Self {
+            epoch_stake: Some(*stake),
+            epoch_stake_rank: rank,
+            epoch_stake_bls_pubkey: vote_state_view
+                .bls_pubkey_compressed()
+                .map(|key| bs58::encode(key).into_string()),
+            epoch_stake_node_pubkey: Some(*vote_state_view.node_pubkey()),
+        }
     }
 }
 
@@ -353,6 +392,10 @@ impl<'a> CommissionVintageSource<'a> {
             .unwrap_or(0)
     }
 
+    fn committee_entry(&self, vote_account: &Pubkey) -> Option<&'a (u64, VoteAccount)> {
+        self.primary.and_then(|primary| primary.get(vote_account))
+    }
+
     fn lookup(
         vote_accounts: Option<&'a VoteAccountsHashMap>,
         vote_account: &Pubkey,
@@ -390,6 +433,7 @@ fn fetch_vote_account_metas<'a>(
     admission: Option<AdmissionFilter<'_>>,
     epoch: Epoch,
     regime: AlpenglowEpochType,
+    rank_map: Option<&BLSPubkeyToRankMap>,
 ) -> VoteAccountMetaCollection {
     let commission_source = CommissionVintageSource::new(epoch_vote_accounts, epoch);
     let commission_vintage = commission_source.vintage();
@@ -440,6 +484,10 @@ fn fetch_vote_account_metas<'a>(
                 .epoch_credits_iter()
                 .map(Into::into)
                 .collect(),
+            committee: CommitteeFields::of(
+                commission_source.committee_entry(pubkey),
+                rank_map.and_then(|rank_map| rank_map.get_rank_for_vote_pubkey(pubkey).copied()),
+            ),
             inflation_rewards_collector: collector_fields
                 .as_ref()
                 .map(|fields| fields.inflation_rewards_collector),
@@ -520,6 +568,13 @@ pub fn generate_validator_collection(
     let (alpenglow_epoch_type, alpenglow_migration_slot) = alpenglow_epoch(bank);
     let live_vote_accounts = bank.vote_accounts();
     let features = SnapshotFeatures::from_feature_snapshot(bank.feature_set.snapshot());
+    let epoch_stakes = bank
+        .epoch_stakes(epoch)
+        .ok_or_else(|| anyhow::anyhow!("Bank holds no epoch_stakes for its own epoch {epoch}"))?;
+    let rank_map = features
+        .alpenglow_active
+        .unwrap_or(false)
+        .then(|| epoch_stakes.bls_pubkey_to_rank_map());
     let admitted_stakes = features
         .admission_filter_active()
         .then(|| bank.get_top_epoch_stakes());
@@ -538,6 +593,7 @@ pub fn generate_validator_collection(
         }),
         epoch,
         alpenglow_epoch_type,
+        rank_map.map(|rank_map| rank_map.as_ref()),
     );
     let collector_vintage = VoteStateVintage::from_live_stakes_cache(epoch);
     let inflation_rewards_points = if alpenglow_epoch_type.pays_tower_points() {
@@ -616,6 +672,10 @@ pub fn generate_validator_collection(
                 tower_credits: vote_account_meta.credits.tower,
                 alpenglow_credits: vote_account_meta.credits.alpenglow,
                 epoch_credits: Some(vote_account_meta.epoch_credits),
+                epoch_stake: vote_account_meta.committee.epoch_stake,
+                epoch_stake_rank: vote_account_meta.committee.epoch_stake_rank,
+                epoch_stake_bls_pubkey: vote_account_meta.committee.epoch_stake_bls_pubkey,
+                epoch_stake_node_pubkey: vote_account_meta.committee.epoch_stake_node_pubkey,
             }
         })
         .collect::<Vec<_>>();
@@ -712,6 +772,7 @@ pub fn generate_validator_collection(
         features,
         alpenglow_epoch_type: Some(alpenglow_epoch_type),
         alpenglow_migration_slot,
+        epoch_total_stake: Some(epoch_stakes.total_stake()),
     })
 }
 
@@ -738,6 +799,7 @@ mod tests {
     const BLOCK_REVENUE_COLLECTOR: Pubkey = Pubkey::new_from_array([2u8; 32]);
     const VOTE_ACCOUNT: Pubkey = Pubkey::new_from_array([7u8; 32]);
     const OTHER_VOTE_ACCOUNT: Pubkey = Pubkey::new_from_array([8u8; 32]);
+    const NODE: Pubkey = Pubkey::new_from_array([3u8; 32]);
 
     fn v3(commission: u8) -> VoteStateVersions {
         VoteStateVersions::new_v3(VoteStateV3 {
@@ -801,6 +863,7 @@ mod tests {
             None,
             EPOCH,
             AlpenglowEpochType::Tower,
+            None,
         )
     }
 
@@ -814,6 +877,7 @@ mod tests {
             Some(AdmissionFilter { admitted }),
             EPOCH,
             AlpenglowEpochType::Tower,
+            None,
         )
     }
 
@@ -1194,9 +1258,157 @@ mod tests {
             ..v4_state(700)
         });
         let live = vote_accounts([(VOTE_ACCOUNT, versions)]);
-        let collection = fetch_vote_account_metas(&live, |_| None, None, EPOCH, regime);
+        let collection = fetch_vote_account_metas(&live, |_| None, None, EPOCH, regime, None);
         let credits = meta_of(&collection, &VOTE_ACCOUNT).credits;
         (credits.published(regime), credits)
+    }
+
+    fn bls_key() -> [u8; BLS_PUBLIC_KEY_COMPRESSED_SIZE] {
+        ValidatorVoteKeypairs::new_rand()
+            .bls_keypair
+            .public
+            .to_bytes_compressed()
+    }
+
+    // agave's rank map drops a node pubkey held twice, so every member gets its own
+    fn committee_member(
+        bls_pubkey_compressed: Option<[u8; BLS_PUBLIC_KEY_COMPRESSED_SIZE]>,
+    ) -> VoteStateVersions {
+        VoteStateVersions::new_v4(VoteStateV4 {
+            node_pubkey: Pubkey::new_unique(),
+            bls_pubkey_compressed,
+            ..v4_state(700)
+        })
+    }
+
+    fn committee_metas(
+        live: &VoteAccountsHashMap,
+        committee: VoteAccountsHashMap,
+    ) -> (VoteAccountMetaCollection, BLSPubkeyToRankMap) {
+        let rank_map = BLSPubkeyToRankMap::new(&committee);
+        let epoch_stakes = HashMap::from([(EPOCH, committee)]);
+        let collection = fetch_vote_account_metas(
+            live,
+            |epoch| epoch_stakes.get(&epoch),
+            None,
+            EPOCH,
+            AlpenglowEpochType::Alpenglow,
+            Some(&rank_map),
+        );
+        (collection, rank_map)
+    }
+
+    #[test]
+    fn committee_ranks_order_by_stake_then_by_the_compressed_bls_key() {
+        let (top, first_tied, second_tied) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let (top_key, first_key, second_key) = (bls_key(), bls_key(), bls_key());
+        let top_member = committee_member(Some(top_key));
+        let VoteStateVersions::V4(top_state) = &top_member else {
+            unreachable!()
+        };
+        let top_node = top_state.node_pubkey;
+        let committee = staked_vote_accounts([
+            (top, top_member, 30),
+            (first_tied, committee_member(Some(first_key)), 20),
+            (second_tied, committee_member(Some(second_key)), 20),
+        ]);
+
+        let (collection, rank_map) = committee_metas(&committee.clone(), committee);
+        let committee_of = |vote_account: &Pubkey| &meta_of(&collection, vote_account).committee;
+
+        assert_eq!(committee_of(&top).epoch_stake_rank, Some(0));
+        let (lower_key, higher_key) = if first_key < second_key {
+            (first_tied, second_tied)
+        } else {
+            (second_tied, first_tied)
+        };
+        assert_eq!(
+            (
+                committee_of(&lower_key).epoch_stake_rank,
+                committee_of(&higher_key).epoch_stake_rank
+            ),
+            (Some(1), Some(2)),
+            "equal stakes are ordered by the compressed BLS key ascending"
+        );
+        for vote_account in [top, first_tied, second_tied] {
+            let rank = committee_of(&vote_account).epoch_stake_rank.unwrap();
+            assert_eq!(
+                rank_map
+                    .get_pubkey_stake_entry(rank.into())
+                    .unwrap()
+                    .vote_account_pubkey,
+                vote_account
+            );
+        }
+        let top_fields = committee_of(&top);
+        assert_eq!(top_fields.epoch_stake, Some(30));
+        assert_eq!(
+            top_fields.epoch_stake_bls_pubkey,
+            Some(bs58::encode(top_key).into_string())
+        );
+        assert_eq!(top_fields.epoch_stake_node_pubkey, Some(top_node));
+    }
+
+    #[test]
+    fn a_duplicated_bls_key_keeps_its_stake_and_loses_its_rank() {
+        let shared_key = bls_key();
+        let committee = staked_vote_accounts([
+            (VOTE_ACCOUNT, committee_member(Some(shared_key)), 30),
+            (OTHER_VOTE_ACCOUNT, committee_member(Some(shared_key)), 20),
+            (Pubkey::new_unique(), committee_member(Some(bls_key())), 10),
+        ]);
+
+        let (collection, _) = committee_metas(&committee.clone(), committee);
+
+        for (vote_account, stake) in [(VOTE_ACCOUNT, 30), (OTHER_VOTE_ACCOUNT, 20)] {
+            let committee = &meta_of(&collection, &vote_account).committee;
+            assert_eq!(committee.epoch_stake, Some(stake));
+            assert_eq!(committee.epoch_stake_rank, None);
+        }
+    }
+
+    #[test]
+    fn a_pre_v4_committee_state_keeps_its_stake_and_node_and_has_no_key_or_rank() {
+        let committee = staked_vote_accounts([
+            (VOTE_ACCOUNT, v3(5), 30),
+            (OTHER_VOTE_ACCOUNT, committee_member(Some(bls_key())), 20),
+        ]);
+        let live = vote_accounts([(VOTE_ACCOUNT, v4_with_bls_key(700))]);
+
+        let (collection, _) = committee_metas(&live, committee);
+        let committee = &meta_of(&collection, &VOTE_ACCOUNT).committee;
+
+        assert_eq!(committee.epoch_stake, Some(30));
+        assert_eq!(
+            committee.epoch_stake_bls_pubkey, None,
+            "the key is the committee state's, not the live one's"
+        );
+        assert_eq!(committee.epoch_stake_rank, None);
+        assert_eq!(committee.epoch_stake_node_pubkey, Some(Pubkey::default()));
+    }
+
+    #[test]
+    fn a_live_account_outside_the_committee_has_no_committee_fields() {
+        let committee =
+            staked_vote_accounts([(OTHER_VOTE_ACCOUNT, committee_member(Some(bls_key())), 20)]);
+        let live = vote_accounts([(VOTE_ACCOUNT, v4_with_bls_key(700))]);
+
+        let (collection, _) = committee_metas(&live, committee);
+        let committee = &meta_of(&collection, &VOTE_ACCOUNT).committee;
+
+        assert_eq!(
+            (
+                committee.epoch_stake,
+                committee.epoch_stake_rank,
+                committee.epoch_stake_bls_pubkey.as_deref(),
+                committee.epoch_stake_node_pubkey
+            ),
+            (None, None, None, None)
+        );
     }
 
     #[test]
@@ -1208,8 +1420,14 @@ mod tests {
         });
         let live = vote_accounts([(VOTE_ACCOUNT, versions)]);
 
-        let collection =
-            fetch_vote_account_metas(&live, |_| None, None, EPOCH, AlpenglowEpochType::Migration);
+        let collection = fetch_vote_account_metas(
+            &live,
+            |_| None,
+            None,
+            EPOCH,
+            AlpenglowEpochType::Migration,
+            None,
+        );
 
         assert_eq!(meta_of(&collection, &VOTE_ACCOUNT).epoch_credits, history);
     }
@@ -1477,6 +1695,12 @@ mod tests {
             tower_credits: Some(789),
             alpenglow_credits: None,
             epoch_credits: Some(vec![(EPOCH - 1, 1_000, 0), (EPOCH, 1_789, 1_000)]),
+            epoch_stake: Some(450),
+            epoch_stake_rank: Some(3),
+            epoch_stake_bls_pubkey: Some(
+                bs58::encode([9u8; BLS_PUBLIC_KEY_COMPRESSED_SIZE]).into_string(),
+            ),
+            epoch_stake_node_pubkey: Some(NODE),
         }
     }
 
@@ -1504,6 +1728,10 @@ mod tests {
                 "tower_credits": 789,
                 "alpenglow_credits": null,
                 "epoch_credits": [[899, 1000, 0], [900, 1789, 1000]],
+                "epoch_stake": 450,
+                "epoch_stake_rank": 3,
+                "epoch_stake_bls_pubkey": "LDxMHkBdiMPeeGd2r1n1zvbsyFVCwW4fqkuVXchP3HsfKKen1mAndxYXCxCQZFnXS",
+                "epoch_stake_node_pubkey": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
             })
         );
     }
@@ -1519,6 +1747,8 @@ mod tests {
             pending_delegator_rewards: None,
             inflation_rewards_admitted: None,
             inflation_rewards_points: None,
+            epoch_stake_rank: None,
+            epoch_stake_bls_pubkey: None,
             ..validator_meta()
         };
 
@@ -1543,6 +1773,10 @@ mod tests {
                 "tower_credits": 789,
                 "alpenglow_credits": null,
                 "epoch_credits": [[899, 1000, 0], [900, 1789, 1000]],
+                "epoch_stake": 450,
+                "epoch_stake_rank": null,
+                "epoch_stake_bls_pubkey": null,
+                "epoch_stake_node_pubkey": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
             })
         );
     }
@@ -1574,6 +1808,7 @@ mod tests {
             },
             alpenglow_epoch_type: Some(AlpenglowEpochType::Migration),
             alpenglow_migration_slot: Some(950),
+            epoch_total_stake: Some(10_000),
         };
 
         let mut value = serde_json::to_value(collection).unwrap();
@@ -1610,6 +1845,7 @@ mod tests {
                 },
                 "alpenglow_epoch_type": "migration",
                 "alpenglow_migration_slot": 950,
+                "epoch_total_stake": 10_000,
             })
         );
     }
@@ -1667,6 +1903,7 @@ mod tests {
             (None, None),
             "a file that recorded no regime must not claim Tower"
         );
+        assert_eq!(collection.epoch_total_stake, None);
         let meta = &collection.validator_metas[0];
         assert_eq!(meta.commission, 7);
         assert_eq!(meta.stake, 456);
@@ -1685,6 +1922,15 @@ mod tests {
             meta.epoch_credits, None,
             "a file that published no history must not be read as an empty one"
         );
+        assert_eq!(
+            (
+                meta.epoch_stake,
+                meta.epoch_stake_rank,
+                meta.epoch_stake_bls_pubkey.as_deref(),
+                meta.epoch_stake_node_pubkey
+            ),
+            (None, None, None, None)
+        );
     }
 
     const BANK_EPOCH: Epoch = 2;
@@ -1700,11 +1946,21 @@ mod tests {
         )
         .genesis_config;
         let (bank0, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis);
-        let bank = Bank::new_from_parent_with_bank_forks(
+        // a bank creates epoch_stakes only for the boundary it crosses, so epoch 1 must be entered on the way
+        let bank1 = Bank::new_from_parent_with_bank_forks(
             &bank_forks,
             bank0.clone(),
             *bank0.leader(),
-            bank0.epoch_schedule().get_last_slot_in_epoch(BANK_EPOCH),
+            bank0
+                .epoch_schedule()
+                .get_first_slot_in_epoch(BANK_EPOCH - 1),
+        );
+        bank1.freeze();
+        let bank = Bank::new_from_parent_with_bank_forks(
+            &bank_forks,
+            bank1.clone(),
+            *bank1.leader(),
+            bank1.epoch_schedule().get_last_slot_in_epoch(BANK_EPOCH),
         );
         for vote_pubkey in bank.vote_accounts().keys() {
             set_epoch_credits(&bank, vote_pubkey, epoch_credits.clone());
@@ -1774,6 +2030,13 @@ mod tests {
             .validator_metas
             .iter()
             .all(|meta| meta.inflation_rewards_points.is_some()));
+        assert!(
+            tower
+                .validator_metas
+                .iter()
+                .all(|meta| meta.epoch_stake_rank.is_none()),
+            "no rank map is built while alpenglow is inactive"
+        );
 
         let migration_slot =
             |bank: &Bank| Some(bank.epoch_schedule().get_first_slot_in_epoch(BANK_EPOCH) + 1);
@@ -1821,6 +2084,32 @@ mod tests {
             .validator_metas
             .iter()
             .all(|meta| meta.inflation_rewards_points.is_none()));
+    }
+
+    #[test]
+    fn the_epoch_total_stake_sums_the_committee_stakes() {
+        let (bank, _bank_forks) = end_of_epoch_bank(vec![(BANK_EPOCH, 1_000, 0)]);
+        let committee_size = bank.epoch_vote_accounts(BANK_EPOCH).unwrap().len();
+
+        let collection = collection_of(&bank);
+
+        let members: Vec<_> = collection
+            .validator_metas
+            .iter()
+            .filter_map(|meta| meta.epoch_stake)
+            .collect();
+        assert_eq!(
+            members.len(),
+            committee_size,
+            "every committee member is live"
+        );
+        assert_ne!(collection.epoch_total_stake, Some(0));
+        assert_eq!(collection.epoch_total_stake, Some(members.iter().sum()));
+        assert!(collection
+            .validator_metas
+            .iter()
+            .all(|meta| meta.epoch_stake_bls_pubkey.is_some()
+                && meta.epoch_stake_node_pubkey.is_some()));
     }
 
     // past u64, so a float or a u64 on either side of the file would corrupt it

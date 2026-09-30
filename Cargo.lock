@@ -5178,6 +5178,7 @@ dependencies = [
  "ahash 0.8.12",
  "anyhow",
  "bincode",
+ "bs58",
  "clap",
  "crc",
  "env_logger",
