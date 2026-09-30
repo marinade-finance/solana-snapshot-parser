@@ -112,6 +112,8 @@ pub struct SnapshotFeatures {
     pub inflation_rewards_commission_rate_in_basis_points_active: Option<bool>,
     // while true agave pays only the accounts surviving admission filtering; this collection still rows every one
     pub inflation_rewards_validator_admission_ticket_active: Option<bool>,
+    #[serde(default)]
+    pub alpenglow_active: Option<bool>,
 }
 
 impl SnapshotFeatures {
@@ -135,6 +137,7 @@ impl SnapshotFeatures {
             inflation_rewards_validator_admission_ticket_active: Self::on_the_distribution_bank(
                 features.validator_admission_ticket,
             ),
+            alpenglow_active: Self::on_the_distribution_bank(features.alpenglow),
         }
     }
 
@@ -1168,6 +1171,7 @@ mod tests {
                 inflation_rewards_delay_commission_updates_active: Some(true),
                 inflation_rewards_commission_rate_in_basis_points_active: Some(true),
                 inflation_rewards_validator_admission_ticket_active: Some(true),
+                alpenglow_active: None,
             }
         );
 
@@ -1182,6 +1186,7 @@ mod tests {
                 inflation_rewards_delay_commission_updates_active: Some(true),
                 inflation_rewards_commission_rate_in_basis_points_active: Some(true),
                 inflation_rewards_validator_admission_ticket_active: Some(true),
+                alpenglow_active: None,
             }
         );
 
@@ -1196,8 +1201,28 @@ mod tests {
                 inflation_rewards_delay_commission_updates_active: Some(true),
                 inflation_rewards_commission_rate_in_basis_points_active: Some(true),
                 inflation_rewards_validator_admission_ticket_active: Some(true),
+                alpenglow_active: None,
             },
             "block_revenue_sharing gates the commission split and nothing else"
+        );
+    }
+
+    #[test]
+    fn the_alpenglow_flag_reports_the_alpenglow_feature_alone() {
+        let mut features = FeatureSet::default().snapshot().clone();
+        features.alpenglow = true;
+
+        assert_eq!(
+            SnapshotFeatures::from_feature_snapshot(&features),
+            SnapshotFeatures {
+                alpenglow_active: Some(true),
+                ..SnapshotFeatures::default()
+            }
+        );
+        assert_eq!(
+            SnapshotFeatures::from_feature_snapshot(FeatureSet::default().snapshot())
+                .alpenglow_active,
+            None
         );
     }
 
@@ -1352,6 +1377,7 @@ mod tests {
                 inflation_rewards_delay_commission_updates_active: Some(true),
                 inflation_rewards_commission_rate_in_basis_points_active: None,
                 inflation_rewards_validator_admission_ticket_active: Some(true),
+                alpenglow_active: None,
             },
         };
 
@@ -1385,6 +1411,7 @@ mod tests {
                     "inflation_rewards_delay_commission_updates_active": true,
                     "inflation_rewards_commission_rate_in_basis_points_active": null,
                     "inflation_rewards_validator_admission_ticket_active": true,
+                    "alpenglow_active": null,
                 },
             })
         );
