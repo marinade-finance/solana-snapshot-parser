@@ -90,8 +90,9 @@ epoch that refused nothing; otherwise take `total_points` from the E+1
 
 In the Alpenglow migration epoch it holds only the Tower points, which agave
 applies to that epoch's Tower slots, and it is `null` for every epoch after.
-From the migration epoch on `credits` is `alpenglow_credits`, a lamport delta,
-and `tower_credits` keeps the Tower part. Those lamports are the voter half of
+From the migration epoch on `credits` is `null`: the Tower part stays in
+`tower_credits` and the lamport delta goes to `alpenglow_credits`, so no reader
+takes lamports for vote credits. Those lamports are the voter half of
 each reward slot, `floor(floor(M * s_V / (N * S)) / 2)` with M and N from
 `epoch_inflation_account` and S the `epoch_total_stake`, plus the leader halves
 of the blocks V led, all credited to the epoch of the paying block 8 slots

@@ -44,7 +44,8 @@ pub struct ValidatorMeta {
     /// priority-fee-distribution // PriorityFeeDistributionAccount // total_lamports_transferred
     pub jito_priority_fee_lamports: u64,
     pub stake: u64,
-    pub credits: u64,
+    // null from the migration epoch on, whose Tower and lamport parts are never one unit
+    pub credits: Option<u64>,
     #[serde(default, with = "option_pubkey_string_conversion")]
     pub inflation_rewards_collector: Option<Pubkey>,
     // agave synthesizes commission * 100 on a pre-v4 vote state, so this is what it applies either way
@@ -67,7 +68,6 @@ pub struct ValidatorMeta {
     // agave's Tower points over all delegations, missed epochs too; null after the migration epoch
     #[serde(default, with = "option_u128_string_conversion")]
     pub inflation_rewards_points: Option<u128>,
-    // credits carries alpenglow_credits from the migration epoch on and tower_credits before it
     #[serde(default)]
     pub tower_credits: Option<u64>,
     #[serde(default)]
@@ -328,7 +328,12 @@ impl EpochCredits {
         credits
     }
 
-    fn published(&self, regime: AlpenglowEpochType) -> u64 {
+    fn published(&self, regime: AlpenglowEpochType) -> Option<u64> {
+        (regime == AlpenglowEpochType::Tower).then(|| self.tower.unwrap_or(0))
+    }
+
+    // the part the regime earns by, which the empty-snapshot check sums
+    fn earned(&self, regime: AlpenglowEpochType) -> u64 {
         match regime {
             AlpenglowEpochType::Tower => self.tower,
             AlpenglowEpochType::Migration | AlpenglowEpochType::Alpenglow => self.alpenglow,
@@ -755,8 +760,15 @@ pub fn generate_validator_collection(
         .collect::<Vec<_>>();
 
     let total_validators = validator_metas.len();
-    let validators_with_credits = validator_metas.iter().filter(|v| v.credits > 0).count();
-    let total_credits: u64 = validator_metas.iter().map(|v| v.credits).sum();
+    let earned = |v: &ValidatorMeta| {
+        EpochCredits {
+            tower: v.tower_credits,
+            alpenglow: v.alpenglow_credits,
+        }
+        .earned(alpenglow_epoch_type)
+    };
+    let validators_with_credits = validator_metas.iter().filter(|v| earned(v) > 0).count();
+    let total_credits: u64 = validator_metas.iter().map(earned).sum();
     let total_stake: u64 = validator_metas.iter().map(|v| v.stake).sum();
     let v4_validators = validator_metas
         .iter()
@@ -1335,7 +1347,7 @@ mod tests {
     fn credits_in(
         regime: AlpenglowEpochType,
         epoch_credits: Vec<(Epoch, u64, u64)>,
-    ) -> (u64, EpochCredits) {
+    ) -> (Option<u64>, EpochCredits) {
         let versions = VoteStateVersions::new_v4(VoteStateV4 {
             epoch_credits,
             ..v4_state(700)
@@ -1537,12 +1549,17 @@ mod tests {
 
         let (credits, parts) = credits_in(AlpenglowEpochType::Tower, history);
 
-        assert_eq!(credits, old_formula);
+        assert_eq!(credits, Some(old_formula));
         assert_eq!((parts.tower, parts.alpenglow), (Some(old_formula), None));
+        assert_eq!(
+            credits_in(AlpenglowEpochType::Tower, vec![(EPOCH - 1, 1_000, 0)]).0,
+            Some(0),
+            "a Tower epoch with no entry for the epoch still earned zero"
+        );
     }
 
     #[test]
-    fn an_alpenglow_epoch_publishes_the_lamport_delta_past_the_marker() {
+    fn an_alpenglow_epoch_publishes_the_lamport_delta_past_the_marker_and_null_credits() {
         let history = vec![
             (EPOCH - 2, 1_000, 0),
             MARKER,
@@ -1552,12 +1569,12 @@ mod tests {
 
         let (credits, parts) = credits_in(AlpenglowEpochType::Alpenglow, history);
 
-        assert_eq!(credits, 7_000);
+        assert_eq!(credits, None);
         assert_eq!((parts.tower, parts.alpenglow), (None, Some(7_000)));
     }
 
     #[test]
-    fn the_migration_epoch_publishes_both_parts_and_credits_the_alpenglow_one() {
+    fn the_migration_epoch_publishes_both_parts_and_null_credits() {
         let (t0, t1, a) = (1_000, 1_800, 50_000);
         let history = vec![(EPOCH, t1, t0), MARKER, (EPOCH, a + t1, t1)];
 
@@ -1566,13 +1583,13 @@ mod tests {
         assert_eq!(parts.tower, Some(t1 - t0));
         assert_eq!(parts.alpenglow, Some(a));
         assert_eq!(
-            credits, a,
-            "the Tower and the lamport parts are never summed"
+            credits, None,
+            "the Tower and the lamport parts are never summed nor swapped into credits"
         );
     }
 
     #[test]
-    fn a_migration_epoch_ending_on_the_marker_publishes_no_alpenglow_part_and_zero_credits() {
+    fn a_migration_epoch_ending_on_the_marker_publishes_no_alpenglow_part_and_null_credits() {
         let history = vec![(EPOCH - 1, 1_000, 0), (EPOCH, 1_800, 1_000), MARKER];
 
         let (credits, parts) = credits_in(AlpenglowEpochType::Migration, history);
@@ -1580,7 +1597,7 @@ mod tests {
         assert_eq!(parts.tower, Some(800));
         assert_eq!(parts.alpenglow, None);
         assert_eq!(
-            credits, 0,
+            credits, None,
             "credits() of a history ending on the marker is u64::MAX and must never leak"
         );
     }
@@ -1591,7 +1608,7 @@ mod tests {
 
         let (credits, parts) = credits_in(AlpenglowEpochType::Alpenglow, history);
 
-        assert_eq!(credits, 7_000);
+        assert_eq!(credits, None);
         assert_eq!((parts.tower, parts.alpenglow), (None, Some(7_000)));
     }
 
@@ -1766,7 +1783,7 @@ mod tests {
             jito_priority_fee_commission: Some(2000),
             jito_priority_fee_lamports: 123,
             stake: 456,
-            credits: 789,
+            credits: Some(789),
             inflation_rewards_collector: Some(INFLATION_REWARDS_COLLECTOR),
             inflation_rewards_commission_bps: Some(733),
             inflation_rewards_commission_bps_is_v4: Some(true),
@@ -1957,6 +1974,27 @@ mod tests {
         );
     }
 
+    // institutional-staking and validator-bonds read credits as a number, so a null must be pinned here
+    #[test]
+    fn an_alpenglow_row_publishes_null_credits_beside_its_parts() {
+        let alpenglow_row = ValidatorMeta {
+            credits: None,
+            tower_credits: None,
+            alpenglow_credits: Some(7_000),
+            ..validator_meta()
+        };
+
+        let json = serde_json::to_value(&alpenglow_row).unwrap();
+
+        assert_eq!(json["credits"], serde_json::Value::Null);
+        assert_eq!(json["tower_credits"], serde_json::Value::Null);
+        assert_eq!(json["alpenglow_credits"], serde_json::json!(7_000));
+        assert_eq!(
+            serde_json::from_value::<ValidatorMeta>(json).unwrap(),
+            alpenglow_row
+        );
+    }
+
     #[test]
     fn a_validator_meta_round_trips_through_json() {
         let meta = validator_meta();
@@ -2016,6 +2054,7 @@ mod tests {
         let meta = &collection.validator_metas[0];
         assert_eq!(meta.commission, 7);
         assert_eq!(meta.stake, 456);
+        assert_eq!(meta.credits, Some(789));
         assert_eq!(meta.inflation_rewards_collector, None);
         assert_eq!(meta.inflation_rewards_commission_bps, None);
         assert_eq!(meta.inflation_rewards_commission_bps_is_v4, None);
@@ -2187,11 +2226,7 @@ mod tests {
             meta.credits,
             meta.tower_credits,
             meta.alpenglow_credits
-        ) == (
-            4_000,
-            Some(1_000),
-            Some(4_000)
-        )));
+        ) == (None, Some(1_000), Some(4_000))));
 
         let alpenglow_slot = |bank: &Bank| {
             Some(
@@ -2249,7 +2284,7 @@ mod tests {
                 meta.tower_credits,
                 meta.alpenglow_credits,
                 meta.inflation_rewards_points,
-            ) == (4_000, None, Some(4_000), None)
+            ) == (None, None, Some(4_000), None)
         }));
     }
 
