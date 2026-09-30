@@ -5194,6 +5194,7 @@ dependencies = [
  "solana-stake-interface",
  "solana-vote",
  "solana-vote-interface",
+ "wincode",
 ]
 
 [[package]]

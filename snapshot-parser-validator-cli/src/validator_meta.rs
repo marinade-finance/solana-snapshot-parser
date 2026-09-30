@@ -1,6 +1,9 @@
 use crate::jito_priority_fee::fetch_jito_priority_fee_metas;
 use {
     crate::{
+        epoch_inflation_account::{
+            epoch_inflation_account, epoch_inflation_account_address, EpochInflationAccount,
+        },
         inflation_rewards_points::{
             alpenglow_epoch, points_by_vote_account, AlpenglowEpochType, AG_MIGRATION_EPOCH_CREDIT,
         },
@@ -207,6 +210,9 @@ pub struct ValidatorMetaCollection {
     pub epoch_total_stake: Option<u64>,
     #[serde(flatten)]
     pub vat_config: VatConfig,
+    // the M and N of the Alpenglow vote reward M * s / (N * S), for this epoch and the one before
+    #[serde(default)]
+    pub epoch_inflation_account: Option<EpochInflationAccount>,
 }
 
 // the bank's values at slot; the E+1 boundary filter applies the next bank's, which a feature can move
@@ -636,6 +642,13 @@ pub fn generate_validator_collection(
         .unwrap_or(false)
         .then(|| epoch_stakes.bls_pubkey_to_rank_map());
     let vat_config = VatConfig::of(bank)?;
+    let epoch_inflation_account = epoch_inflation_account(bank)?;
+    if features.alpenglow_active == Some(true) && epoch_inflation_account.is_none() {
+        anyhow::bail!(
+            "Alpenglow is active at slot {absolute_slot}, yet the bank holds no epoch inflation account at {}, which agave writes at every epoch start",
+            epoch_inflation_account_address()
+        );
+    }
     let admitted_stakes = features
         .admission_filter_active()
         .then(|| bank.get_top_epoch_stakes());
@@ -806,6 +819,7 @@ pub fn generate_validator_collection(
         alpenglow_epoch_type, alpenglow_migration_slot
     );
     info!("VAT config: {:?}", vat_config);
+    info!("Epoch inflation account: {:?}", epoch_inflation_account);
 
     if total_credits == 0 {
         anyhow::bail!(
@@ -836,6 +850,7 @@ pub fn generate_validator_collection(
         alpenglow_migration_slot,
         epoch_total_stake: Some(epoch_stakes.total_stake()),
         vat_config,
+        epoch_inflation_account,
     })
 }
 
@@ -843,6 +858,7 @@ pub fn generate_validator_collection(
 mod tests {
     use {
         super::*,
+        crate::epoch_inflation_account::EpochInflationState,
         crate::utils::vote_account_fixture::{
             set_epoch_credits, set_genesis_certificate, staked_vote_accounts,
         },
@@ -1881,6 +1897,14 @@ mod tests {
                 vat_lamports_per_epoch: Some(1_600_000_000),
                 max_alpenglow_vote_accounts: Some(2_000),
             },
+            epoch_inflation_account: Some(EpochInflationAccount {
+                current: EpochInflationState {
+                    max_possible_validator_reward: 7_000,
+                    slots_per_epoch: 432_000,
+                    epoch: 900,
+                },
+                prev: None,
+            }),
         };
 
         let mut value = serde_json::to_value(collection).unwrap();
@@ -1921,6 +1945,14 @@ mod tests {
                 "minimum_vote_account_balance_for_vat": 1_627_074_240,
                 "vat_lamports_per_epoch": 1_600_000_000,
                 "max_alpenglow_vote_accounts": 2_000,
+                "epoch_inflation_account": {
+                    "current": {
+                        "max_possible_validator_reward": 7_000,
+                        "slots_per_epoch": 432_000,
+                        "epoch": 900,
+                    },
+                    "prev": null,
+                },
             })
         );
     }
@@ -1980,6 +2012,7 @@ mod tests {
         );
         assert_eq!(collection.epoch_total_stake, None);
         assert_eq!(collection.vat_config, VatConfig::default());
+        assert_eq!(collection.epoch_inflation_account, None);
         let meta = &collection.validator_metas[0];
         assert_eq!(meta.commission, 7);
         assert_eq!(meta.stake, 456);
@@ -2011,17 +2044,26 @@ mod tests {
 
     const BANK_EPOCH: Epoch = 2;
 
-    fn end_of_epoch_bank(
-        epoch_credits: Vec<(Epoch, u64, u64)>,
-    ) -> (Arc<Bank>, Arc<RwLock<BankForks>>) {
+    fn three_validator_genesis() -> GenesisConfigInfo {
         let keypairs: Vec<_> = (0..3).map(|_| ValidatorVoteKeypairs::new_rand()).collect();
-        let genesis = create_genesis_config_with_vote_accounts(
+        create_genesis_config_with_vote_accounts(
             1_000_000_000_000,
             &keypairs,
             vec![1_000_000_000; 3],
         )
-        .genesis_config;
-        let (bank0, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis);
+    }
+
+    fn end_of_epoch_bank(
+        epoch_credits: Vec<(Epoch, u64, u64)>,
+    ) -> (Arc<Bank>, Arc<RwLock<BankForks>>) {
+        end_of_epoch_bank_from(&three_validator_genesis(), epoch_credits)
+    }
+
+    fn end_of_epoch_bank_from(
+        genesis: &GenesisConfigInfo,
+        epoch_credits: Vec<(Epoch, u64, u64)>,
+    ) -> (Arc<Bank>, Arc<RwLock<BankForks>>) {
+        let (bank0, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis.genesis_config);
         // a bank creates epoch_stakes only for the boundary it crosses, so epoch 1 must be entered on the way
         let bank1 = Bank::new_from_parent_with_bank_forks(
             &bank_forks,
@@ -2168,6 +2210,47 @@ mod tests {
             .validator_metas
             .iter()
             .all(|meta| meta.inflation_rewards_points.is_none()));
+    }
+
+    #[test]
+    fn an_alpenglow_collection_publishes_every_raw_input_of_the_vote_reward() {
+        let mut genesis = three_validator_genesis();
+        activate_alpenglow_at_genesis(&mut genesis.genesis_config);
+        let (bank, _bank_forks) = end_of_epoch_bank_from(
+            &genesis,
+            vec![(BANK_EPOCH - 1, 1_000, 0), (BANK_EPOCH, 5_000, 1_000)],
+        );
+
+        let collection = collection_of(&bank);
+
+        assert_eq!(
+            collection.alpenglow_epoch_type,
+            Some(AlpenglowEpochType::Alpenglow),
+            "agave's alpenglow genesis certifies slot 0"
+        );
+        assert_eq!(collection.features.alpenglow_active, Some(true));
+        let epoch_inflation_account = collection.epoch_inflation_account.as_ref().unwrap();
+        assert_eq!(epoch_inflation_account.current.epoch, BANK_EPOCH);
+        assert!(collection.vat_config.vat_lamports_per_epoch.is_some());
+        let mut ranks: Vec<_> = collection
+            .validator_metas
+            .iter()
+            .map(|meta| meta.epoch_stake_rank.unwrap())
+            .collect();
+        ranks.sort();
+        assert_eq!(
+            ranks,
+            (0..3).collect::<Vec<u16>>(),
+            "ranks cover 0..n without gaps"
+        );
+        assert!(collection.validator_metas.iter().all(|meta| {
+            (
+                meta.credits,
+                meta.tower_credits,
+                meta.alpenglow_credits,
+                meta.inflation_rewards_points,
+            ) == (4_000, None, Some(4_000), None)
+        }));
     }
 
     #[test]
