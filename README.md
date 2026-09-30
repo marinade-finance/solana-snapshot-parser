@@ -37,6 +37,10 @@ itself reads it from, and publishes the vintage beside it:
 | `inflation_rewards_collector`, `pending_delegator_rewards` | live stakes cache at `slot`, published as `collector_vintage` | `distribution_epoch_vote_accounts`, which is `epoch_stakes(E+2)` as the distribution bank snapshots it |
 | `inflation_rewards_commission_bps` | `epoch_stakes(E)`, falling back to `epoch_stakes(E+1)` then to the state at `slot`, published as `commission_vintage` | `snapshot_epoch_vote_accounts.or_else(rewarded_epoch_vote_accounts)` in `get_cached_vote_accounts` |
 | `block_revenue_collector`, `block_revenue_commission_bps` | `epoch_stakes(E)` only, no fallback | `deposit_or_burn_fee`, which resolves the leader there and expects it to be present |
+| `credits`, `tower_credits`, `alpenglow_credits`, `epoch_credits` | live stakes cache at `slot` | the vote state `increment_credits` writes, `epoch_credits` verbatim with the migration marker |
+| `epoch_stake`, `epoch_stake_rank`, `epoch_stake_bls_pubkey`, `epoch_stake_node_pubkey`, `epoch_total_stake` | `epoch_stakes(E)`, the rank only while alpenglow is active | the Alpenglow vote reward's committee and its `BLSPubkeyToRankMap` |
+| `minimum_vote_account_balance_for_vat`, `vat_lamports_per_epoch`, `max_alpenglow_vote_accounts`, `epoch_inflation_account` | the bank at `slot` | the E+1 boundary filter and rewards read the next bank's values, which a feature activation can move |
+| `alpenglow_epoch_type`, `alpenglow_migration_slot` | the Alpenglow genesis certificate | `get_alpenglow_genesis_certificate` |
 
 Two counters say how many **staked** vote accounts missed the commission vintage:
 `commission_vintage_next_snapshot_fallbacks` were answered by
@@ -86,6 +90,12 @@ epoch that refused nothing; otherwise take `total_points` from the E+1
 
 In the Alpenglow migration epoch it holds only the Tower points, which agave
 applies to that epoch's Tower slots, and it is `null` for every epoch after.
+From the migration epoch on `credits` is `alpenglow_credits`, a lamport delta,
+and `tower_credits` keeps the Tower part. Those lamports are the voter half of
+each reward slot, `floor(floor(M * s_V / (N * S)) / 2)` with M and N from
+`epoch_inflation_account` and S the `epoch_total_stake`, plus the leader halves
+of the blocks V led, all credited to the epoch of the paying block 8 slots
+later. So the file gives the exact per-slot maximum, but not a voter-only split.
 
 `features` publishes the agave flags these vintages depend on. The two block
 revenue flags are independent and neither stands in for the other:
