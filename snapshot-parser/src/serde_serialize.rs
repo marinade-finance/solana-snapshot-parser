@@ -69,6 +69,46 @@ pub mod option_u128_string_conversion {
     }
 }
 
+pub mod option_epoch_credits_string_conversion {
+    use serde::{self, Deserialize, Deserializer, Serialize, Serializer};
+
+    type EpochCredits = Vec<(u64, u64, u64)>;
+
+    pub fn serialize<S>(value: &Option<EpochCredits>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        value
+            .as_ref()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .map(|(epoch, credits, prev_credits)| {
+                        [epoch, credits, prev_credits].map(u64::to_string)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<EpochCredits>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let parse = |value: String| value.parse().map_err(serde::de::Error::custom);
+        Option::<Vec<[String; 3]>>::deserialize(deserializer)?
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .map(|[epoch, credits, prev_credits]| {
+                        Ok((parse(epoch)?, parse(credits)?, parse(prev_credits)?))
+                    })
+                    .collect()
+            })
+            .transpose()
+    }
+}
+
 pub mod map_pubkey_string_conversion {
     use serde::de::{MapAccess, Visitor};
     use serde::ser::SerializeMap;

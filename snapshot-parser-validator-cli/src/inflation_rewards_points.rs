@@ -1,6 +1,7 @@
 use {
+    serde::{Deserialize, Serialize},
     snapshot_parser::stake_activation::StakeActivation,
-    solana_program::pubkey::Pubkey,
+    solana_program::{clock::Slot, pubkey::Pubkey},
     solana_runtime::bank::Bank,
     solana_sdk::account::{AccountSharedData, ReadableAccount},
     solana_stake_interface::{
@@ -12,12 +13,38 @@ use {
 };
 
 // agave_votor_messages::migration::AG_MIGRATION_EPOCH_CREDIT, past which epoch_credits are Alpenglow's
-const AG_MIGRATION_EPOCH_CREDIT: (Epoch, u64, u64) = (Epoch::MAX, u64::MAX, u64::MAX);
+pub(crate) const AG_MIGRATION_EPOCH_CREDIT: (Epoch, u64, u64) = (Epoch::MAX, u64::MAX, u64::MAX);
 
-// agave pays the migration epoch's Tower slots by Tower points too; only the epochs after are Alpenglow's
-pub fn pays_tower_points(bank: &Bank) -> bool {
-    bank.get_alpenglow_genesis_certificate()
-        .is_none_or(|cert| bank.epoch_schedule().get_epoch(cert.cert_type.slot()) >= bank.epoch())
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AlpenglowEpochType {
+    Tower,
+    Migration,
+    Alpenglow,
+}
+
+pub fn alpenglow_epoch(bank: &Bank) -> (AlpenglowEpochType, Option<Slot>) {
+    let Some(cert) = bank.get_alpenglow_genesis_certificate() else {
+        return (AlpenglowEpochType::Tower, None);
+    };
+    let migration_slot = cert.cert_type.slot();
+    let regime = match bank
+        .epoch_schedule()
+        .get_epoch(migration_slot)
+        .cmp(&bank.epoch())
+    {
+        std::cmp::Ordering::Greater => AlpenglowEpochType::Tower,
+        std::cmp::Ordering::Equal => AlpenglowEpochType::Migration,
+        std::cmp::Ordering::Less => AlpenglowEpochType::Alpenglow,
+    };
+    (regime, Some(migration_slot))
+}
+
+impl AlpenglowEpochType {
+    // agave pays the migration epoch's Tower slots by Tower points too; only the epochs after are Alpenglow's
+    pub fn pays_tower_points(self) -> bool {
+        self != AlpenglowEpochType::Alpenglow
+    }
 }
 
 // agave's Tower calculate_stake_points_and_credits: a stake left unpaid earns every epoch it never observed
@@ -83,11 +110,10 @@ pub fn points_by_vote_account(
 mod tests {
     use {
         super::*,
-        agave_feature_set::validator_admission_ticket,
-        agave_votor_messages::{
-            certificate::{Certificate, CertificateType},
-            consensus_message::Block,
+        crate::utils::vote_account_fixture::{
+            set_epoch_credits, set_genesis_certificate, store_state,
         },
+        agave_feature_set::validator_admission_ticket,
         solana_runtime::genesis_utils::{
             create_genesis_config_with_vote_accounts, deactivate_features, ValidatorVoteKeypairs,
         },
@@ -196,19 +222,8 @@ mod tests {
         );
     }
 
-    fn set_genesis_certificate(bank: &Bank, slot: u64) {
-        bank.set_alpenglow_genesis_certificate(&Certificate {
-            cert_type: CertificateType::Genesis(Block {
-                slot,
-                block_id: Default::default(),
-            }),
-            signature: "A".repeat(256).parse().unwrap(),
-            bitmap: vec![],
-        });
-    }
-
     #[test]
-    fn tower_points_pay_through_the_migration_epoch_and_stop_after_it() {
+    fn the_regime_and_tower_points_follow_the_epoch_of_the_genesis_certificate() {
         let keypairs = [ValidatorVoteKeypairs::new_rand()];
         let genesis =
             create_genesis_config_with_vote_accounts(1_000_000_000_000, &keypairs, vec![STAKE])
@@ -224,18 +239,37 @@ mod tests {
         );
 
         assert!(
-            pays_tower_points(&bank),
+            alpenglow_epoch(&bank).0.pays_tower_points(),
             "a Tower bank holds no certificate"
+        );
+        assert_eq!(alpenglow_epoch(&bank), (AlpenglowEpochType::Tower, None));
+        let next_epoch_slot = bank.epoch_schedule().get_first_slot_in_epoch(epoch + 1);
+        set_genesis_certificate(&bank, next_epoch_slot);
+        assert!(
+            alpenglow_epoch(&bank).0.pays_tower_points(),
+            "a migration certified for a later epoch leaves this one Tower's"
+        );
+        assert_eq!(
+            alpenglow_epoch(&bank),
+            (AlpenglowEpochType::Tower, Some(next_epoch_slot))
         );
         set_genesis_certificate(&bank, first_slot + 5);
         assert!(
-            pays_tower_points(&bank),
+            alpenglow_epoch(&bank).0.pays_tower_points(),
             "the migration epoch still pays its Tower slots by Tower points"
+        );
+        assert_eq!(
+            alpenglow_epoch(&bank),
+            (AlpenglowEpochType::Migration, Some(first_slot + 5))
         );
         set_genesis_certificate(&bank, first_slot - 5);
         assert!(
-            !pays_tower_points(&bank),
+            !alpenglow_epoch(&bank).0.pays_tower_points(),
             "the epoch after the migration is Alpenglow's"
+        );
+        assert_eq!(
+            alpenglow_epoch(&bank),
+            (AlpenglowEpochType::Alpenglow, Some(first_slot - 5))
         );
     }
 
@@ -246,32 +280,6 @@ mod tests {
             stake_points(&stake_observing(9_000), &three_epochs(), full_stake),
             0
         );
-    }
-
-    // the stakes cache drops an account whose data changed size, so the state is written in place
-    fn store_state(
-        bank: &Bank,
-        pubkey: &Pubkey,
-        account: &AccountSharedData,
-        state: &impl serde::Serialize,
-    ) {
-        let mut account = account.clone();
-        let mut data = account.data().to_vec();
-        bincode::serialize_into(&mut data[..], state).unwrap();
-        account.set_data_from_slice(&data);
-        bank.store_account(pubkey, &account);
-    }
-
-    fn set_epoch_credits(bank: &Bank, vote_pubkey: &Pubkey, epoch_credits: Vec<(Epoch, u64, u64)>) {
-        let account = bank.get_account(vote_pubkey).unwrap();
-        let VoteStateVersions::V4(state) = bincode::deserialize(account.data()).unwrap() else {
-            panic!("genesis creates v4 vote accounts");
-        };
-        let versions = VoteStateVersions::new_v4(VoteStateV4 {
-            epoch_credits,
-            ..*state
-        });
-        store_state(bank, vote_pubkey, &account, &versions);
     }
 
     fn set_credits_observed(
