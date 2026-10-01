@@ -880,8 +880,9 @@ mod tests {
         solana_runtime::{
             bank_forks::BankForks,
             genesis_utils::{
-                activate_alpenglow_at_genesis, create_genesis_config_with_vote_accounts,
-                deactivate_features, GenesisConfigInfo, ValidatorVoteKeypairs,
+                activate_alpenglow_at_genesis, activate_feature,
+                create_genesis_config_with_vote_accounts, deactivate_features, GenesisConfigInfo,
+                ValidatorVoteKeypairs,
             },
             slot_params::slot_time_feature_ids,
         },
@@ -2146,6 +2147,14 @@ mod tests {
         genesis: &GenesisConfigInfo,
         epoch_credits: Vec<(Epoch, u64, u64)>,
     ) -> (Arc<Bank>, Arc<RwLock<BankForks>>) {
+        end_of_epoch_bank_crossing(genesis, epoch_credits, |_| {})
+    }
+
+    fn end_of_epoch_bank_crossing(
+        genesis: &GenesisConfigInfo,
+        epoch_credits: Vec<(Epoch, u64, u64)>,
+        before_boundary: impl FnOnce(&Bank),
+    ) -> (Arc<Bank>, Arc<RwLock<BankForks>>) {
         let (bank0, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis.genesis_config);
         // a bank creates epoch_stakes only for the boundary it crosses, so epoch 1 must be entered on the way
         let bank1 = Bank::new_from_parent_with_bank_forks(
@@ -2156,6 +2165,7 @@ mod tests {
                 .epoch_schedule()
                 .get_first_slot_in_epoch(BANK_EPOCH - 1),
         );
+        before_boundary(&bank1);
         bank1.freeze();
         let bank = Bank::new_from_parent_with_bank_forks(
             &bank_forks,
@@ -2418,6 +2428,39 @@ mod tests {
 
         assert_eq!(collection.features.alpenglow_active, None);
         assert_eq!(collection.epoch_inflation_account, None);
+    }
+
+    #[test]
+    fn alpenglow_activated_at_an_epoch_boundary_holds_the_inflation_account_of_that_epoch() {
+        let genesis = three_validator_genesis();
+        let mut activated = genesis.genesis_config.clone();
+        activate_feature(&mut activated, agave_feature_set::alpenglow::id());
+        let mut pending = AccountSharedData::from(
+            activated.accounts[&agave_feature_set::alpenglow::id()].clone(),
+        );
+        // bincode of Feature { activated_at: None }, padded to Feature::size_of
+        pending.set_data_from_slice(&[0; 9]);
+        let (bank, _bank_forks) = end_of_epoch_bank_crossing(
+            &genesis,
+            vec![(BANK_EPOCH, 1_000, 0)],
+            |previous_epoch_bank| {
+                assert!(!previous_epoch_bank.feature_set.snapshot().alpenglow);
+                assert_eq!(epoch_inflation_account(previous_epoch_bank).unwrap(), None);
+                previous_epoch_bank.store_account(&agave_feature_set::alpenglow::id(), &pending);
+            },
+        );
+
+        let collection = collection_of(&bank);
+
+        assert_eq!(collection.features.alpenglow_active, Some(true));
+        assert_eq!(
+            collection.alpenglow_epoch_type,
+            Some(AlpenglowEpochType::Tower),
+            "the feature activates before any genesis certificate migrates the cluster"
+        );
+        let epoch_inflation_account = collection.epoch_inflation_account.unwrap();
+        assert_eq!(epoch_inflation_account.current.epoch, BANK_EPOCH);
+        assert_eq!(epoch_inflation_account.prev, None);
     }
 
     // a slot-time feature takes effect at a later epoch boundary than the one activating it
