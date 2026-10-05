@@ -9,7 +9,7 @@ use {
         },
         jito_mev::fetch_jito_mev_metas,
     },
-    agave_feature_set::FeatureSnapshot,
+    agave_feature_set::{validator_admission_ticket, FeatureSet},
     log::{info, warn},
     serde::{Deserialize, Serialize},
     snapshot_parser::serde_serialize::option_epoch_credits_string_conversion,
@@ -151,7 +151,8 @@ impl SnapshotFeatures {
         active_at_slot.then_some(true)
     }
 
-    fn from_feature_snapshot(features: &FeatureSnapshot) -> Self {
+    fn from_feature_set(feature_set: &FeatureSet) -> Self {
+        let features = feature_set.snapshot();
         Self {
             block_revenue_custom_collector_active: features.custom_commission_collector,
             block_revenue_sharing_active: features.block_revenue_sharing,
@@ -164,7 +165,7 @@ impl SnapshotFeatures {
             inflation_rewards_commission_rate_in_basis_points_active:
                 Self::on_the_distribution_bank(features.commission_rate_in_basis_points),
             inflation_rewards_validator_admission_ticket_active: Self::on_the_distribution_bank(
-                features.validator_admission_ticket,
+                feature_set.is_active(&validator_admission_ticket::id()),
             ),
             alpenglow_active: Self::on_the_distribution_bank(features.alpenglow),
         }
@@ -243,10 +244,13 @@ fn vote_account_rent_exempt_minimum(bank: &Bank) -> u64 {
 
 impl VatConfig {
     fn of(bank: &Bank) -> anyhow::Result<Self> {
-        let features = bank.feature_set.snapshot();
-        if !features.validator_admission_ticket {
+        if !bank
+            .feature_set
+            .is_active(&validator_admission_ticket::id())
+        {
             return Ok(Self::default());
         }
+        let features = bank.feature_set.snapshot();
         let minimum_vote_account_balance_for_vat = bank.minimum_vote_account_balance_for_vat();
         let vat_lamports_per_epoch = if features.alpenglow {
             // vat_to_burn_per_epoch is crate-private, so it is taken back out of the minimum it is added to
@@ -629,7 +633,7 @@ pub fn generate_validator_collection(
 
     let (alpenglow_epoch_type, alpenglow_migration_slot) = alpenglow_epoch(bank);
     let live_vote_accounts = bank.vote_accounts();
-    let features = SnapshotFeatures::from_feature_snapshot(bank.feature_set.snapshot());
+    let features = SnapshotFeatures::from_feature_set(&bank.feature_set);
     let epoch_stakes = bank
         .epoch_stakes(epoch)
         .ok_or_else(|| anyhow::anyhow!("Bank holds no epoch_stakes for its own epoch {epoch}"))?;
@@ -1704,13 +1708,13 @@ mod tests {
     // each flag must name the feature governing it, not a neighbour
     #[test]
     fn every_published_flag_reports_its_own_feature() {
-        let mut features = FeatureSet::default().snapshot().clone();
-        features.commission_rate_in_basis_points = true;
-        features.delay_commission_updates = true;
-        features.validator_admission_ticket = true;
+        let mut features = FeatureSet::default();
+        features.activate(&agave_feature_set::commission_rate_in_basis_points::id(), 0);
+        features.activate(&agave_feature_set::delay_commission_updates::id(), 0);
+        features.activate(&agave_feature_set::validator_admission_ticket::id(), 0);
 
         assert_eq!(
-            SnapshotFeatures::from_feature_snapshot(&features),
+            SnapshotFeatures::from_feature_set(&features),
             SnapshotFeatures {
                 block_revenue_custom_collector_active: false,
                 block_revenue_sharing_active: false,
@@ -1722,10 +1726,10 @@ mod tests {
             }
         );
 
-        features.custom_commission_collector = true;
+        features.activate(&agave_feature_set::custom_commission_collector::id(), 0);
 
         assert_eq!(
-            SnapshotFeatures::from_feature_snapshot(&features),
+            SnapshotFeatures::from_feature_set(&features),
             SnapshotFeatures {
                 block_revenue_custom_collector_active: true,
                 block_revenue_sharing_active: false,
@@ -1737,10 +1741,10 @@ mod tests {
             }
         );
 
-        features.block_revenue_sharing = true;
+        features.activate(&agave_feature_set::block_revenue_sharing::id(), 0);
 
         assert_eq!(
-            SnapshotFeatures::from_feature_snapshot(&features),
+            SnapshotFeatures::from_feature_set(&features),
             SnapshotFeatures {
                 block_revenue_custom_collector_active: true,
                 block_revenue_sharing_active: true,
@@ -1756,19 +1760,18 @@ mod tests {
 
     #[test]
     fn the_alpenglow_flag_reports_the_alpenglow_feature_alone() {
-        let mut features = FeatureSet::default().snapshot().clone();
-        features.alpenglow = true;
+        let mut features = FeatureSet::default();
+        features.activate(&agave_feature_set::alpenglow::id(), 0);
 
         assert_eq!(
-            SnapshotFeatures::from_feature_snapshot(&features),
+            SnapshotFeatures::from_feature_set(&features),
             SnapshotFeatures {
                 alpenglow_active: Some(true),
                 ..SnapshotFeatures::default()
             }
         );
         assert_eq!(
-            SnapshotFeatures::from_feature_snapshot(FeatureSet::default().snapshot())
-                .alpenglow_active,
+            SnapshotFeatures::from_feature_set(&FeatureSet::default()).alpenglow_active,
             None
         );
     }
@@ -1776,10 +1779,10 @@ mod tests {
     // SIMD-0232 redirects the deposit and SIMD-0123 splits it, so neither flag stands in for the other
     #[test]
     fn the_block_revenue_split_is_not_reported_by_the_collector_flag() {
-        let mut features = FeatureSet::default().snapshot().clone();
-        features.block_revenue_sharing = true;
+        let mut features = FeatureSet::default();
+        features.activate(&agave_feature_set::block_revenue_sharing::id(), 0);
 
-        let published = SnapshotFeatures::from_feature_snapshot(&features);
+        let published = SnapshotFeatures::from_feature_set(&features);
 
         assert!(published.block_revenue_sharing_active);
         assert!(!published.block_revenue_custom_collector_active);
@@ -1787,7 +1790,7 @@ mod tests {
 
     #[test]
     fn a_flag_inactive_at_the_slot_is_not_reported_as_inactive_for_the_inflation_rewards() {
-        let features = SnapshotFeatures::from_feature_snapshot(FeatureSet::default().snapshot());
+        let features = SnapshotFeatures::from_feature_set(&FeatureSet::default());
 
         assert!(!features.block_revenue_custom_collector_active);
         assert_eq!(features.inflation_rewards_custom_collector_active, None);

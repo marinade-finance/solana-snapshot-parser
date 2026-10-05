@@ -23,8 +23,8 @@ opt-level = 3
 [workspace.dependencies]
 # already in Cargo.lock as a transitive dependency of solana-runtime at the same
 # pinned version; declared here so the feature-flag reads are testable
-agave-feature-set = "=4.2.1"
-agave-votor-messages = { version = "=4.2.1", features = ["agave-unstable-api"] }
+agave-feature-set = "=4.3.0"
+agave-votor-messages = { version = "=4.3.0", features = ["agave-unstable-api"] }
 ahash = "0.8.12"
 borsh = { version = "1", features = ["derive"] }
 anyhow = "1.0.102"
@@ -44,18 +44,23 @@ serde = "1.0.228"
 serde_json = "1.0.149"
 shellexpand = "3.1.2"
 snapshot-parser = { path = "./snapshot-parser" }
-agave-snapshots = "=4.2.1"
-solana-genesis-utils = "=4.2.1"
-solana-ledger = { version = "=4.2.1", features = ["agave-unstable-api"] }
+agave-snapshots = "=4.3.0"
+solana-genesis-utils = "=4.3.0"
+solana-ledger = { version = "=4.3.0", features = ["agave-unstable-api"] }
 solana-loader-v3-interface = { version = "=7.0.0", features = ["serde"] }
 solana-native-token = "=3.0.0"
 solana-program = "=4.0.0"
-solana-runtime = "=4.2.1"
+solana-runtime = "=4.3.0"
 solana-sdk = "=4.0.1"
-solana-accounts-db = "=4.2.1"
-solana-stake-interface = { version = "=4.3.0", features = ["serde", "sysvar"] }
-solana-vote = { version = "=4.2.1", features = ["agave-unstable-api"] }
-solana-vote-interface = { version = "=6.0.3", features = ["serde"] }
+solana-accounts-db = "=4.3.0"
+solana-stake-interface = { version = "=4.4.0", features = ["serde", "sysvar"] }
+solana-vote = { version = "=4.3.0", features = ["agave-unstable-api"] }
+solana-vote-interface = { version = "=6.1.0", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
 # pinned to the version solana-runtime decodes its EpochInflationAccountState with
-wincode = { version = "=0.5.5", features = ["derive"] }
+wincode = { version = "=0.6.2", features = ["derive"] }
+
+[patch.crates-io]
+# solana-ledger 4.3.0 calls rocksdb APIs only agave's fork has, the rev of agave v4.3.0's own patch
+librocksdb-sys = { git = "https://github.com/anza-xyz/rust-rocksdb", rev = "4dba80dfe9434e595a971f5b2985ff9ba4fb31e7" }
+rocksdb = { git = "https://github.com/anza-xyz/rust-rocksdb", rev = "4dba80dfe9434e595a971f5b2985ff9ba4fb31e7" }

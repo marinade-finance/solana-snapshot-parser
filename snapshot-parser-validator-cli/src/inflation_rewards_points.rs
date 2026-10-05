@@ -27,7 +27,7 @@ pub fn alpenglow_epoch(bank: &Bank) -> (AlpenglowEpochType, Option<Slot>) {
     let Some(cert) = bank.get_alpenglow_genesis_certificate() else {
         return (AlpenglowEpochType::Tower, None);
     };
-    let migration_slot = cert.cert_type.slot();
+    let migration_slot = cert.block.slot;
     let regime = match bank
         .epoch_schedule()
         .get_epoch(migration_slot)

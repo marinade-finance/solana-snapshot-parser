@@ -1,6 +1,6 @@
 use {
     agave_votor_messages::{
-        certificate::{Certificate, CertificateType},
+        certificate::{CertSignature, GenesisCert},
         consensus_message::Block,
     },
     solana_program::{clock::Slot, pubkey::Pubkey},
@@ -70,12 +70,14 @@ pub fn one_validator_genesis() -> GenesisConfigInfo {
 }
 
 pub fn set_genesis_certificate(bank: &Bank, slot: Slot) {
-    bank.set_alpenglow_genesis_certificate(&Certificate {
-        cert_type: CertificateType::Genesis(Block {
+    bank.set_alpenglow_genesis_certificate(&GenesisCert {
+        block: Block {
             slot,
             block_id: Default::default(),
-        }),
-        signature: "A".repeat(256).parse().unwrap(),
-        bitmap: vec![],
+        },
+        signature: CertSignature {
+            signature: "A".repeat(256).parse().unwrap(),
+            bitmap: vec![],
+        },
     });
 }
