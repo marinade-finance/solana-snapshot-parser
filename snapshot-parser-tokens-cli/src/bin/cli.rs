@@ -131,13 +131,13 @@ async fn main() -> anyhow::Result<()> {
         current_timestamp
     );
 
-    info!("Loading filters from: {:?}", &args.filters);
+    info!("Loading filters from: {:?}", args.filters);
     let filters = Filters::load(&args.filters)?;
 
     // let solana_ledger::genesis_utils::GenesisConfigInfo { genesis_config, .. } =
     //     solana_ledger::genesis_utils::create_genesis_config(100);
     // let bank: Arc<solana_runtime::bank::Bank> = Arc::new(solana_runtime::bank::Bank::new_for_tests(&genesis_config));
-    info!("Creating bank from ledger path: {:?}", &args.ledger_path);
+    info!("Creating bank from ledger path: {:?}", args.ledger_path);
     let bank = create_bank_from_ledger(&args.ledger_path)?;
     assert!(bank.is_frozen());
     info!(
