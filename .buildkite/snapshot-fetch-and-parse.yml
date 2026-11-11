@@ -236,26 +236,7 @@ steps:
 
   - wait: ~
 
-  - label: ":gear: Trigger Stakes ETL to speed up pipeline processing"
-    if: build.env("TEST_MODE") == null
-    env:
-      TRIGGER_BRANCH: "main"
-    commands:
-    - epoch=$(buildkite-agent meta-data get epoch)
-    - etl_stakes_scheduler=$(./scripts/cluster-config.bash "$$CLUSTER" ETL_STAKES_SCHEDULER)
-    - |
-      cat <<EOF | buildkite-agent pipeline upload
-      steps:
-        - trigger: "$$etl_stakes_scheduler"
-          label: ":rocket: Trigger: ETL Stakes Scheduler (epoch: $$epoch)"
-          async: true
-          build:
-            branch: $TRIGGER_BRANCH
-            env:
-              CLUSTER: $$CLUSTER
-              TEST_MODE: $$TEST_MODE
-      EOF
-
+  # no ETL trigger: stakes-etl chains down to init-settlements, past Buildkite's trigger depth limit
   - label: ":unlock: Concurrency gate unlock"
     command: echo "End of concurrency gate <--"
     concurrency_group: 'solana-snapshot-parser/fetch-and-parse-${CLUSTER-mainnet}'
