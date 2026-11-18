@@ -635,11 +635,8 @@ pub fn generate_validator_collection(
 
     let (alpenglow_epoch_type, alpenglow_migration_slot) = alpenglow_epoch(bank);
     // never the stakes cache: a snapshot producer may leave it out of the manifest, the accounts it cannot
-    let live_vote_accounts = live_vote_accounts(
-        vote_accounts,
-        stake_accounts,
-        &StakeActivation::new(bank)?,
-    );
+    let live_vote_accounts =
+        live_vote_accounts(vote_accounts, stake_accounts, &StakeActivation::new(bank)?);
     check_against_stakes_cache(&live_vote_accounts, bank)?;
     let features = SnapshotFeatures::from_feature_set(&bank.feature_set);
     let epoch_stakes = bank

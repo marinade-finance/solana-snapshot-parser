@@ -40,7 +40,8 @@ pub fn live_vote_accounts(
 }
 
 fn cacheable_vote_account(account: &AccountSharedData) -> Option<VoteAccount> {
-    if account.lamports() == 0 || !VoteStateVersions::is_correct_size_and_initialized(account.data())
+    if account.lamports() == 0
+        || !VoteStateVersions::is_correct_size_and_initialized(account.data())
     {
         return None;
     }
@@ -156,7 +157,9 @@ fn compare(computed: &VoteAccountsHashMap, cached: &VoteAccountsHashMap) -> anyh
 mod tests {
     use {
         super::*,
-        solana_runtime::genesis_utils::{create_genesis_config_with_vote_accounts, ValidatorVoteKeypairs},
+        solana_runtime::genesis_utils::{
+            create_genesis_config_with_vote_accounts, ValidatorVoteKeypairs,
+        },
         solana_sdk::account::WritableAccount,
         std::sync::Arc,
     };
@@ -164,7 +167,9 @@ mod tests {
     const STAKE: u64 = 1_000_000_000;
 
     fn bank_with_validators(count: usize) -> Arc<Bank> {
-        let keypairs: Vec<_> = (0..count).map(|_| ValidatorVoteKeypairs::new_rand()).collect();
+        let keypairs: Vec<_> = (0..count)
+            .map(|_| ValidatorVoteKeypairs::new_rand())
+            .collect();
         let stakes = (1..=count as u64).map(|i| STAKE * i).collect();
         let genesis =
             create_genesis_config_with_vote_accounts(1_000_000_000_000_000, &keypairs, stakes)
@@ -226,7 +231,10 @@ mod tests {
         computed.remove(&removed);
 
         let err = check_against_stakes_cache(&computed, &bank).unwrap_err();
-        assert!(err.to_string().contains("not rebuilt from accounts"), "{err}");
+        assert!(
+            err.to_string().contains("not rebuilt from accounts"),
+            "{err}"
+        );
     }
 
     #[test]
