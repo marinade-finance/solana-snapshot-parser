@@ -19,6 +19,9 @@ declare -A config=(
     [mainnet/SLACK_FEED]="feed-snapshot"
     # Empty lets fetch-genesis.bash fall back to the agent's RPC_URL
     [mainnet/GENESIS_RPC_URL]=""
+    # A cluster's genesis never changes, so it is downloaded once into a cache keyed by this hash; outside WORKING_DIR, which the scheduler prunes
+    [mainnet/GENESIS_HASH]="5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
+    [mainnet/GENESIS_CACHE_DIR]="/mnt/storage-1/genesis-cache/mainnet"
     [mainnet/TIP_DISTRIBUTION_PROGRAM]="4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7"
     [mainnet/TIP_PAYMENT_PROGRAM]="T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt"
     [mainnet/REQUIRE_PRIORITY_FEE_DATA]="true"
@@ -30,6 +33,9 @@ declare -A config=(
     [testnet/SLACK_FEED]="feed-snapshot-testnet"
     # Literal, not $RPC_URL: an agent environment hook owns that name and points it to mainnet
     [testnet/GENESIS_RPC_URL]="https://api.testnet.solana.com"
+    # A testnet reset changes this hash, which moves the cache to a fresh directory and fails the parse until it is updated here
+    [testnet/GENESIS_HASH]="4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY"
+    [testnet/GENESIS_CACHE_DIR]="/mnt/storage-1/genesis-cache/testnet"
     [testnet/TIP_DISTRIBUTION_PROGRAM]="DzvGET57TAgEDxvm3ERUM4GNcsAJdqjDLCne9sdfY4wf"
     [testnet/TIP_PAYMENT_PROGRAM]="GJHtFqM9agxPmkeKjHny6qiRKrXZALvvFGiKf11QE7hy"
     [testnet/REQUIRE_PRIORITY_FEE_DATA]="false"

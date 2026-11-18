@@ -100,7 +100,9 @@ steps:
     commands:
     - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
     - genesis_rpc_url=$(./scripts/cluster-config.bash "$$CLUSTER" GENESIS_RPC_URL)
-    - ./scripts/fetch-genesis.bash "$$snapshot_dir" "$$genesis_rpc_url"
+    - genesis_cache_dir=$(./scripts/cluster-config.bash "$$CLUSTER" GENESIS_CACHE_DIR)
+    - genesis_hash=$(./scripts/cluster-config.bash "$$CLUSTER" GENESIS_HASH)
+    - ./scripts/fetch-genesis.bash "$$snapshot_dir" "$$genesis_rpc_url" "$$genesis_cache_dir" "$$genesis_hash"
 
   - label: ":hammer_and_wrench: :rust: Build"
     commands:
@@ -126,6 +128,7 @@ steps:
     - tip_distribution_program=$(./scripts/cluster-config.bash "$$CLUSTER" TIP_DISTRIBUTION_PROGRAM)
     - tip_payment_program=$(./scripts/cluster-config.bash "$$CLUSTER" TIP_PAYMENT_PROGRAM)
     - require_priority_fee_data=$(./scripts/cluster-config.bash "$$CLUSTER" REQUIRE_PRIORITY_FEE_DATA)
+    - genesis_hash=$(./scripts/cluster-config.bash "$$CLUSTER" GENESIS_HASH)
     - buildkite-agent artifact download --include-retried-jobs target/release/snapshot-parser-validator-cli .
     - chmod +x target/release/snapshot-parser-validator-cli
     - |
@@ -135,6 +138,7 @@ steps:
       # --require-leader-schedule false is what makes a missing schedule survivable; the exit code decides the rest
       ./target/release/snapshot-parser-validator-cli \
         --ledger-path "$$snapshot_dir" \
+        --expected-genesis-hash "$$genesis_hash" \
         --output-validator-meta-collection "./validators.json" \
         --output-stake-meta-collection "./stakes.json" \
         --output-jito-stake-meta "./jito-stake-meta-{hash}.json" \
