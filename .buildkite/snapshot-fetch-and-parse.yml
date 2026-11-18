@@ -1,9 +1,11 @@
+# Comparison branch: parses one local snapshot archive (Agave- or Firedancer-produced) and only
+# publishes the JSONs as Buildkite artifacts. Nothing is read from or written to Google Cloud
+# Storage, and nothing is posted to Slack.
 agents:
   queue: "snapshots"
 
 env:
   CLUSTER: "${CLUSTER-mainnet}"
-  slack_api: "https://slack.com/api/chat.postMessage"
 
 steps:
   - label: ":closed_lock_with_key: Concurrency gate lock"
@@ -11,7 +13,7 @@ steps:
     concurrency_group: 'solana-snapshot-parser/fetch-and-parse-${CLUSTER-mainnet}'
     concurrency: 1
 
-  - input: "Which epoch to fetch?"
+  - input: "Which epoch to parse?"
     fields:
       - text: "Epoch"
         key: "epoch"
@@ -38,8 +40,7 @@ steps:
       local_snapshot_dir=$${LOCAL_SNAPSHOT_DIR:-$$local_snapshots}
       buildkite-agent meta-data set --redacted-vars='' local_snapshot_dir "$$local_snapshot_dir"
     - |
-      gcloud_snapshots=$(./scripts/cluster-config.bash "$$CLUSTER" GCLOUD_SNAPSHOTS)
-      echo "Cluster: '$$CLUSTER', Epoch: '$$epoch', GCloud: '$$gcloud_snapshots', Local Snapshot Dir: '$$local_snapshot_dir'"
+      echo "Cluster: '$$CLUSTER', Epoch: '$$epoch', Snapshot path: '$$SNAPSHOT_PATH', Local Snapshot Dir: '$$local_snapshot_dir'"
 
   - label: ":memo: Annotate retry parameters"
     depends_on: "setup-env-init"
@@ -56,7 +57,7 @@ steps:
         CLUSTER=$$CLUSTER
         EPOCH=$$epoch
         LOCAL_SNAPSHOT_DIR=$$local_snapshot_dir
-        TEST_MODE=$$TEST_MODE
+        SNAPSHOT_PATH=$$SNAPSHOT_PATH
         \`\`\`
         EOF
 
@@ -67,28 +68,6 @@ steps:
       echo "## Cluster: $$CLUSTER" | buildkite-agent annotate $${annotation_style:+--style "$$annotation_style"} --priority 10 --context "cluster"
 
   - wait: ~
-
-  - label: ":mega: Notification"
-    if: build.env("TEST_MODE") == null
-    commands:
-    - |
-      epoch=${EPOCH:-$(buildkite-agent meta-data get epoch)}
-      slack_feed=$(./scripts/cluster-config.bash "$$CLUSTER" SLACK_FEED)
-      buildkite-agent meta-data set --redacted-vars="" epoch "$$epoch"
-      curl ${slack_api} -X POST -H 'Content-Type: application/json; charset=utf-8' \
-        -H "Authorization: Bearer $$SLACK_BEARER_TOKEN" -d '{
-          "channel": "'"$$slack_feed"'",
-          "attachments": [
-            {
-              "author_name": "Solana Snapshot Parser",
-              "author_link": "https://github.com/marinade-finance/solana-snapshot-parser",
-              "color": "8000FF",
-              "title": "Parsing Solana Snapshot '"$$CLUSTER"' ('"$$epoch"').",
-              "title_link": "'"$${BUILDKITE_BUILD_URL}/#$${BUILDKITE_JOB_ID}"'",
-              "footer": "<'"$${BUILDKITE_BUILD_URL}/#$${BUILDKITE_JOB_ID}"'|View in Buildkite>"
-            }
-          ]
-      }'
 
   - label: ":file_folder: Prepare snapshot directory"
     commands:
@@ -101,15 +80,19 @@ steps:
       snapshot_dir=$(mktemp --directory -p "$$working_dir" "snapshot-$$epoch-$(date +%s)-XXXXXX")
       buildkite-agent meta-data set --redacted-vars="" snapshot_dir "$$snapshot_dir"
 
-      local_snapshot=$(find $$local_snapshot_dir/*/$$epoch/ -name 'snapshot-*.tar.zst' 2>/dev/null | head -1)
-      if [[ -n "$$local_snapshot" ]]; then
-        echo "Found local snapshot at: $$local_snapshot"
-        cp -- "$$local_snapshot" "$$snapshot_dir/"
-        buildkite-agent meta-data set --redacted-vars="" snapshot_local "true"
+      # SNAPSHOT_PATH names one archive (e.g. a Firedancer-produced one); otherwise the epoch's archive in the local dir
+      if [[ -n "$$SNAPSHOT_PATH" ]]; then
+        local_snapshot=$$SNAPSHOT_PATH
       else
-        echo "No local snapshot found, using temp dir: $$snapshot_dir"
-        buildkite-agent meta-data set --redacted-vars="" snapshot_local "false"
+        local_snapshot=$(find $$local_snapshot_dir/*/$$epoch/ -name 'snapshot-*.tar.zst' 2>/dev/null | head -1)
       fi
+      if [[ -z "$$local_snapshot" || ! -f "$$local_snapshot" ]]; then
+        echo "No local snapshot for epoch $$epoch (SNAPSHOT_PATH='$$SNAPSHOT_PATH', LOCAL_SNAPSHOT_DIR='$$local_snapshot_dir'); this branch never fetches from Google Cloud Storage" >&2
+        exit 1
+      fi
+      echo "Using local snapshot: $$local_snapshot"
+      cp -- "$$local_snapshot" "$$snapshot_dir/"
+      echo "Snapshot parsed: \`$$(basename "$$local_snapshot")\`" | buildkite-agent annotate --style info --context "snapshot-source"
 
   - wait: ~
 
@@ -118,19 +101,6 @@ steps:
     - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
     - genesis_rpc_url=$(./scripts/cluster-config.bash "$$CLUSTER" GENESIS_RPC_URL)
     - ./scripts/fetch-genesis.bash "$$snapshot_dir" "$$genesis_rpc_url"
-
-  - label: ":cloud: :arrow_right: :floppy_disk: Fetch snapshot"
-    commands:
-    - snapshot_local=$(buildkite-agent meta-data get snapshot_local)
-    - |
-      if [[ "$$snapshot_local" == "true" ]]; then
-        echo "Skipping snapshot fetch, using local snapshot"
-      else
-        snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
-        epoch=$(buildkite-agent meta-data get epoch)
-        gcloud_snapshots=$(./scripts/cluster-config.bash "$$CLUSTER" GCLOUD_SNAPSHOTS)
-        ./scripts/fetch-snapshot.bash "$$epoch" "$$snapshot_dir" "$$gcloud_snapshots"
-      fi
 
   - label: ":hammer_and_wrench: :rust: Build"
     commands:
@@ -176,54 +146,12 @@ steps:
         --require-leader-schedule false
 
       if [[ ! -f ./leader-schedule.json ]]; then
-        echo "No leader schedule was produced! Block fees of this epoch stay attributed by validator identity, which SIMD-0180 no longer pays, until it is republished. See the parser output above." | buildkite-agent annotate --style warning --context "leader-schedule"
+        echo "No leader schedule was produced! See the parser output above." | buildkite-agent annotate --style warning --context "leader-schedule"
       fi
     - |
-      cp ./validators.json "$$snapshot_dir/validators.json"
-      cp ./stakes.json "$$snapshot_dir/stakes.json"
-      if ! jito_stake_meta_name=$(./scripts/find-jito-stake-meta.bash .); then
-        echo "No single, validly named Jito stake meta collection was produced! The stakes ETL consumes this file, see the parser output above." | buildkite-agent annotate --style error --context "jito-stake-meta"
+      if ! ./scripts/find-jito-stake-meta.bash . > /dev/null; then
+        echo "No single, validly named Jito stake meta collection was produced! See the parser output above." | buildkite-agent annotate --style error --context "jito-stake-meta"
         exit 1
-      fi
-      rm -f "$$snapshot_dir"/jito-stake-meta-*.json
-      cp "./$$jito_stake_meta_name" "$$snapshot_dir/$$jito_stake_meta_name"
-      rm -f "$$snapshot_dir/leader-schedule.json"
-      if [[ -f ./leader-schedule.json ]]; then
-        cp ./leader-schedule.json "$$snapshot_dir/leader-schedule.json"
-      fi
-
-  - wait: ~
-
-  - label: ":floppy_disk: :arrow_left: :cloud: Fetch past validator data"
-    if: build.env("TEST_MODE") == null
-    commands:
-    - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
-    - epoch=$(buildkite-agent meta-data get epoch)
-    - previous_epoch=$((epoch - 1))
-    - gcloud_snapshots=$(./scripts/cluster-config.bash "$$CLUSTER" GCLOUD_SNAPSHOTS)
-    - gcloud storage cp "$$gcloud_snapshots/$$previous_epoch/validators.json" "$$gcloud_snapshots/$$epoch/past-validators.json" || echo "Previous validator data not available!"
-
-  - label: ":floppy_disk: :arrow_right: :cloud: Upload artifacts"
-    if: build.env("TEST_MODE") == null
-    commands:
-    - snapshot_dir=$(buildkite-agent meta-data get snapshot_dir)
-    - epoch=$(buildkite-agent meta-data get epoch)
-    - gcloud_snapshots=$(./scripts/cluster-config.bash "$$CLUSTER" GCLOUD_SNAPSHOTS)
-    # Checked before the first upload, so a failing epoch leaves no partial data in GCS
-    - |
-      if ! jito_stake_meta_name=$(./scripts/find-jito-stake-meta.bash "$$snapshot_dir"); then
-        echo "No single, validly named Jito stake meta collection to upload for the stakes ETL, see the job log above." | buildkite-agent annotate --style error --context "jito-stake-meta"
-        exit 1
-      fi
-    - gcloud storage cp "$$snapshot_dir/validators.json" "$$gcloud_snapshots/$$epoch/"
-    - gcloud storage cp "$$snapshot_dir/stakes.json" "$$gcloud_snapshots/$$epoch/"
-    - gcloud storage cp "$$snapshot_dir/$$jito_stake_meta_name" "$$gcloud_snapshots/$$epoch/$$jito_stake_meta_name"
-    # Uploaded last, so it never stands between the other three and the bucket
-    - |
-      if [[ -f "$$snapshot_dir/leader-schedule.json" ]]; then
-        gcloud storage cp "$$snapshot_dir/leader-schedule.json" "$$gcloud_snapshots/$$epoch/leader-schedule.json"
-      else
-        echo "No leader schedule to upload for epoch $$epoch! Block fees of this epoch stay attributed by validator identity until it is republished." | buildkite-agent annotate --style warning --context "leader-schedule"
       fi
 
   - wait: ~
@@ -236,7 +164,6 @@ steps:
 
   - wait: ~
 
-  # no ETL trigger: stakes-etl chains down to init-settlements, past Buildkite's trigger depth limit
   - label: ":unlock: Concurrency gate unlock"
     command: echo "End of concurrency gate <--"
     concurrency_group: 'solana-snapshot-parser/fetch-and-parse-${CLUSTER-mainnet}'

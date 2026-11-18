@@ -8,6 +8,7 @@ use {
             alpenglow_epoch, points_by_vote_account, AlpenglowEpochType, AG_MIGRATION_EPOCH_CREDIT,
         },
         jito_mev::fetch_jito_mev_metas,
+        live_vote_accounts::{check_against_stakes_cache, live_vote_accounts},
     },
     agave_feature_set::{validator_admission_ticket, FeatureSet},
     log::{info, warn},
@@ -27,7 +28,7 @@ use {
     solana_sdk::{account::AccountSharedData, epoch_info::EpochInfo},
     solana_stake_interface::stake_history::Epoch,
     solana_vote::{
-        vote_account::{VoteAccount, VoteAccountsHashMap},
+        vote_account::{VoteAccount, VoteAccounts, VoteAccountsHashMap},
         vote_state_view::VoteStateView,
     },
     solana_vote_interface::state::VoteStateV4,
@@ -605,6 +606,7 @@ pub(crate) fn check_end_of_epoch_bank(
 
 pub fn generate_validator_collection(
     bank: &Arc<Bank>,
+    vote_accounts: &[(Pubkey, AccountSharedData)],
     stake_accounts: &[(Pubkey, AccountSharedData)],
     tip_distribution_accounts: &[(Pubkey, AccountSharedData)],
     priority_fee_distribution_accounts: &[(Pubkey, AccountSharedData)],
@@ -632,7 +634,13 @@ pub fn generate_validator_collection(
         (validator_rate * capitalization as f64 * epoch_duration_in_years) as u64;
 
     let (alpenglow_epoch_type, alpenglow_migration_slot) = alpenglow_epoch(bank);
-    let live_vote_accounts = bank.vote_accounts();
+    // never the stakes cache: a snapshot producer may leave it out of the manifest, the accounts it cannot
+    let live_vote_accounts = live_vote_accounts(
+        vote_accounts,
+        stake_accounts,
+        &StakeActivation::new(bank)?,
+    );
+    check_against_stakes_cache(&live_vote_accounts, bank)?;
     let features = SnapshotFeatures::from_feature_set(&bank.feature_set);
     let epoch_stakes = bank
         .epoch_stakes(epoch)
@@ -653,9 +661,13 @@ pub fn generate_validator_collection(
     } else {
         None
     };
-    let admitted_stakes = features
-        .admission_filter_active()
-        .then(|| bank.get_top_epoch_stakes());
+    // get_top_epoch_stakes, applied to the vote accounts rebuilt from accounts rather than to the stakes cache
+    let admitted_vote_accounts = features.admission_filter_active().then(|| {
+        VoteAccounts::from(Arc::new(live_vote_accounts.clone())).clone_and_filter_for_vat(
+            MAX_ALPENGLOW_VOTE_ACCOUNTS,
+            bank.minimum_vote_account_balance_for_vat(),
+        )
+    });
     let VoteAccountMetaCollection {
         metas: vote_account_metas,
         commission_vintage,
@@ -666,9 +678,11 @@ pub fn generate_validator_collection(
     } = fetch_vote_account_metas(
         &live_vote_accounts,
         |epoch| bank.epoch_vote_accounts(epoch),
-        admitted_stakes.as_ref().map(|stakes| AdmissionFilter {
-            admitted: stakes.vote_accounts().as_ref(),
-        }),
+        admitted_vote_accounts
+            .as_ref()
+            .map(|vote_accounts| AdmissionFilter {
+                admitted: vote_accounts.as_ref(),
+            }),
         epoch,
         alpenglow_epoch_type,
         rank_map.map(|rank_map| rank_map.as_ref()),
@@ -2196,8 +2210,12 @@ mod tests {
             .keys()
             .map(|vote_account| tip_distribution_account(vote_account, BANK_EPOCH))
             .collect();
+        let vote_accounts = bank
+            .get_program_accounts(&solana_vote_interface::program::ID)
+            .unwrap();
         generate_validator_collection(
             bank,
+            &vote_accounts,
             &stake_accounts,
             &tip_distribution_accounts,
             &[],

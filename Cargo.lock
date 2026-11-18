@@ -5087,6 +5087,7 @@ dependencies = [
  "crc",
  "env_logger",
  "log",
+ "rayon",
  "serde",
  "serde_json",
  "snapshot-parser",

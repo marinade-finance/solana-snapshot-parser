@@ -8,6 +8,7 @@ use {
 };
 
 pub struct ScannedAccounts {
+    pub vote: Arc<Vec<(Pubkey, AccountSharedData)>>,
     pub stake: Arc<Vec<(Pubkey, AccountSharedData)>>,
     pub tip_distribution: Arc<Vec<(Pubkey, AccountSharedData)>>,
     pub priority_fee_distribution: Arc<Vec<(Pubkey, AccountSharedData)>>,
@@ -18,6 +19,7 @@ pub fn scan_required_accounts(
     verify: bool,
     tip_distribution_program: Pubkey,
 ) -> anyhow::Result<ScannedAccounts> {
+    let vote_program = solana_vote_interface::program::ID;
     let stake_program = solana_stake_interface::program::ID;
     let priority_fee_distribution_program: Pubkey =
         JITO_PRIORITY_FEE_DISTRIBUTION_PROGRAM.try_into()?;
@@ -25,6 +27,7 @@ pub fn scan_required_accounts(
     let mut scanned = scan_accounts_by_owner(
         bank,
         &[
+            vote_program,
             stake_program,
             tip_distribution_program,
             priority_fee_distribution_program,
@@ -32,12 +35,14 @@ pub fn scan_required_accounts(
     )?;
     let mut take = |owner: &Pubkey| Arc::new(scanned.remove(owner).unwrap_or_default());
     let scanned_accounts = ScannedAccounts {
+        vote: take(&vote_program),
         stake: take(&stake_program),
         tip_distribution: take(&tip_distribution_program),
         priority_fee_distribution: take(&priority_fee_distribution_program),
     };
 
     if verify {
+        verify_matches_program_accounts(bank, &vote_program, &scanned_accounts.vote)?;
         verify_matches_program_accounts(bank, &stake_program, &scanned_accounts.stake)?;
         verify_matches_program_accounts(
             bank,
