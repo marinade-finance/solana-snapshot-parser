@@ -1,6 +1,4 @@
-# Comparison branch: parses one local snapshot archive (Agave- or Firedancer-produced) and only
-# publishes the JSONs as Buildkite artifacts. Nothing is read from or written to Google Cloud
-# Storage, and nothing is posted to Slack.
+# Comparison branch: parses a local archive, publishes JSONs only as artifacts, no GCS, no Slack
 agents:
   queue: "snapshots"
 
@@ -80,7 +78,7 @@ steps:
       snapshot_dir=$(mktemp --directory -p "$$working_dir" "snapshot-$$epoch-$(date +%s)-XXXXXX")
       buildkite-agent meta-data set --redacted-vars="" snapshot_dir "$$snapshot_dir"
 
-      # SNAPSHOT_PATH names one archive (e.g. a Firedancer-produced one); otherwise the epoch's archive in the local dir
+      # SNAPSHOT_PATH names one archive, e.g. a Firedancer one; else the epoch's local archive
       if [[ -n "$$SNAPSHOT_PATH" ]]; then
         local_snapshot=$$SNAPSHOT_PATH
       else
@@ -102,7 +100,8 @@ steps:
     - genesis_rpc_url=$(./scripts/cluster-config.bash "$$CLUSTER" GENESIS_RPC_URL)
     - genesis_cache_dir=$(./scripts/cluster-config.bash "$$CLUSTER" GENESIS_CACHE_DIR)
     - genesis_hash=$(./scripts/cluster-config.bash "$$CLUSTER" GENESIS_HASH)
-    - ./scripts/fetch-genesis.bash "$$snapshot_dir" "$$genesis_rpc_url" "$$genesis_cache_dir" "$$genesis_hash"
+    - genesis_sha256=$(./scripts/cluster-config.bash "$$CLUSTER" GENESIS_SHA256)
+    - ./scripts/fetch-genesis.bash "$$snapshot_dir" "$$genesis_rpc_url" "$$genesis_cache_dir" "$$genesis_hash" "$$genesis_sha256"
 
   - label: ":hammer_and_wrench: :rust: Build"
     commands:

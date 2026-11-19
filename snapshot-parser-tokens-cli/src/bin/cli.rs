@@ -30,7 +30,7 @@ struct Args {
     #[arg(long, env, value_parser = path_parser)]
     ledger_path: PathBuf,
 
-    /// Refuse to load unless the genesis in the ledger path has this hash (e.g. mainnet's 5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d)
+    /// Refuse to load unless the genesis in the ledger path has this hash
     #[arg(long, env)]
     expected_genesis_hash: Option<solana_sdk::hash::Hash>,
 

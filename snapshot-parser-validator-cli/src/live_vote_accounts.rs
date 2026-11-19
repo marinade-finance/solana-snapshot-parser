@@ -3,7 +3,7 @@ use {
     rayon::prelude::*,
     snapshot_parser::stake_activation::StakeActivation,
     solana_program::pubkey::Pubkey,
-    solana_runtime::{bank::Bank, stake_account::StakeAccount},
+    solana_runtime::stake_account::StakeAccount,
     solana_sdk::account::{AccountSharedData, ReadableAccount},
     solana_stake_interface::state::Delegation,
     solana_vote::vote_account::{VoteAccount, VoteAccountsHashMap},
@@ -11,18 +11,9 @@ use {
     std::collections::HashMap,
 };
 
-// How many differing vote accounts a failed cross-check names before it only counts the rest
 const MISMATCH_EXAMPLES: usize = 10;
 
-/// The vote accounts and per-vote-account stake agave keeps in its stakes cache at the bank's
-/// slot, rebuilt from the accounts alone. Not every snapshot producer writes the stakes cache
-/// into the manifest (Firedancer writes it empty), but every one writes the accounts, so this
-/// is the one source the parser reads live vote state from for any snapshot.
-///
-/// Mirrors `StakesCache::check_and_store`: a vote account is kept when it holds lamports, is
-/// initialized at the right size and parses; a stake account counts when it parses to a
-/// delegation. Each vote account's stake is the sum of `delegation_effective_stake` at the
-/// bank's epoch over the delegations to it, as `Stakes::calculate_delegated_stakes` sums it.
+/// Agave's stakes cache rebuilt from accounts, as `StakesCache::check_and_store` admits them.
 pub fn live_vote_accounts(
     vote_accounts: &[(Pubkey, AccountSharedData)],
     stake_accounts: &[(Pubkey, AccountSharedData)],
@@ -75,42 +66,24 @@ fn delegated_stakes(
         })
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum StakesCacheCheck {
-    /// The manifest carried a stakes cache and it equals the one rebuilt from accounts
-    Matched { vote_accounts: usize },
-    /// The manifest carried no stakes cache, so there was nothing to compare against
-    NoStakesCache,
-}
-
-/// Holds the rebuilt map to the stakes cache whenever the snapshot carries one, so every Agave
-/// snapshot parsed re-proves that reading from accounts gives what agave caches. A snapshot
-/// whose manifest left the cache empty (as Firedancer writes it) has nothing to compare.
+/// Fails unless `computed` equals a non-empty `cached`; an empty one (Firedancer) is skipped.
 pub fn check_against_stakes_cache(
     computed: &VoteAccountsHashMap,
-    bank: &Bank,
-) -> anyhow::Result<StakesCacheCheck> {
-    let cached = bank.vote_accounts();
+    cached: &VoteAccountsHashMap,
+) -> anyhow::Result<()> {
     if cached.is_empty() {
-        let epoch = bank.epoch();
-        let epoch_stakes_vote_accounts = bank
-            .epoch_vote_accounts(epoch)
-            .map(|vote_accounts| vote_accounts.len())
-            .unwrap_or_default();
         warn!(
-            "The snapshot manifest carries an empty stakes cache while epoch_stakes({epoch}) holds {epoch_stakes_vote_accounts} vote accounts, as a Firedancer-produced snapshot does; live vote state is read from the {} vote accounts rebuilt from accounts, with no cache to cross-check them against",
+            "The snapshot carries an empty stakes cache, as a Firedancer-produced snapshot does; live vote state is read from the {} vote accounts rebuilt from accounts, with no cache to cross-check them against",
             computed.len()
         );
-        return Ok(StakesCacheCheck::NoStakesCache);
+        return Ok(());
     }
-    compare(computed, &cached)?;
+    compare(computed, cached)?;
     info!(
         "Stakes cache cross-check passed: the {} vote accounts rebuilt from accounts equal the snapshot's stakes cache",
         computed.len()
     );
-    Ok(StakesCacheCheck::Matched {
-        vote_accounts: computed.len(),
-    })
+    Ok(())
 }
 
 fn compare(computed: &VoteAccountsHashMap, cached: &VoteAccountsHashMap) -> anyhow::Result<()> {
@@ -157,8 +130,9 @@ fn compare(computed: &VoteAccountsHashMap, cached: &VoteAccountsHashMap) -> anyh
 mod tests {
     use {
         super::*,
-        solana_runtime::genesis_utils::{
-            create_genesis_config_with_vote_accounts, ValidatorVoteKeypairs,
+        solana_runtime::{
+            bank::Bank,
+            genesis_utils::{create_genesis_config_with_vote_accounts, ValidatorVoteKeypairs},
         },
         solana_sdk::account::WritableAccount,
         std::sync::Arc,
@@ -175,14 +149,12 @@ mod tests {
             create_genesis_config_with_vote_accounts(1_000_000_000_000_000, &keypairs, stakes)
                 .genesis_config;
         let (bank0, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis);
-        let bank = Bank::new_from_parent_with_bank_forks(
+        Bank::new_from_parent_with_bank_forks(
             &bank_forks,
             bank0.clone(),
             *bank0.leader(),
             bank0.epoch_schedule().get_last_slot_in_epoch(2),
-        );
-        bank.freeze();
-        bank
+        )
     }
 
     fn rebuilt(bank: &Bank) -> VoteAccountsHashMap {
@@ -202,35 +174,82 @@ mod tests {
     #[test]
     fn the_map_rebuilt_from_accounts_is_the_stakes_cache() {
         let bank = bank_with_validators(3);
+        bank.freeze();
         let computed = rebuilt(&bank);
 
         assert_eq!(computed.len(), 3);
         assert_eq!(computed, *bank.vote_accounts());
-        assert_eq!(
-            check_against_stakes_cache(&computed, &bank).unwrap(),
-            StakesCacheCheck::Matched { vote_accounts: 3 }
-        );
+        check_against_stakes_cache(&computed, &bank.vote_accounts()).unwrap();
+    }
+
+    #[test]
+    fn two_delegations_to_one_vote_account_are_summed_as_the_cache_sums_them() {
+        let bank = bank_with_validators(2);
+        let (_, stake_account) = bank
+            .get_program_accounts(&solana_stake_interface::program::ID)
+            .unwrap()
+            .remove(0);
+        let voter = StakeAccount::<Delegation>::try_from(stake_account.clone())
+            .unwrap()
+            .delegation()
+            .voter_pubkey;
+        let single = bank.vote_accounts()[&voter].0;
+        assert!(single > 0);
+        bank.store_account(&Pubkey::new_unique(), &stake_account);
+        bank.freeze();
+
+        let computed = rebuilt(&bank);
+
+        assert_eq!(computed[&voter].0, 2 * single);
+        check_against_stakes_cache(&computed, &bank.vote_accounts()).unwrap();
+    }
+
+    #[test]
+    fn an_empty_stakes_cache_is_not_compared() {
+        let bank = bank_with_validators(2);
+        bank.freeze();
+
+        check_against_stakes_cache(&rebuilt(&bank), &VoteAccountsHashMap::default()).unwrap();
     }
 
     #[test]
     fn a_stake_that_differs_from_the_cache_fails_the_cross_check() {
         let bank = bank_with_validators(2);
+        bank.freeze();
         let mut computed = rebuilt(&bank);
         let (_, (stake, _)) = computed.iter_mut().next().unwrap();
         *stake += 1;
 
-        let err = check_against_stakes_cache(&computed, &bank).unwrap_err();
+        let err = check_against_stakes_cache(&computed, &bank.vote_accounts()).unwrap_err();
         assert!(err.to_string().contains("in 1 vote account(s)"), "{err}");
+    }
+
+    #[test]
+    fn a_vote_account_whose_data_differs_from_the_cache_fails_the_cross_check() {
+        let bank = bank_with_validators(2);
+        bank.freeze();
+        let mut computed = rebuilt(&bank);
+        let (pubkey, (_, vote_account)) = computed.iter_mut().next().unwrap();
+        let mut account = bank.get_account(pubkey).unwrap();
+        account.set_lamports(account.lamports() + 1);
+        *vote_account = VoteAccount::try_from(account).unwrap();
+
+        let err = check_against_stakes_cache(&computed, &bank.vote_accounts()).unwrap_err();
+        assert!(
+            err.to_string().contains("differs from the cached one"),
+            "{err}"
+        );
     }
 
     #[test]
     fn a_vote_account_missing_from_either_side_fails_the_cross_check() {
         let bank = bank_with_validators(2);
+        bank.freeze();
         let mut computed = rebuilt(&bank);
         let removed = *computed.keys().next().unwrap();
         computed.remove(&removed);
 
-        let err = check_against_stakes_cache(&computed, &bank).unwrap_err();
+        let err = check_against_stakes_cache(&computed, &bank.vote_accounts()).unwrap_err();
         assert!(
             err.to_string().contains("not rebuilt from accounts"),
             "{err}"
@@ -240,6 +259,7 @@ mod tests {
     #[test]
     fn an_uninitialized_or_drained_vote_account_is_not_cached() {
         let bank = bank_with_validators(1);
+        bank.freeze();
         let (pubkey, account) = bank
             .get_program_accounts(&solana_vote_interface::program::ID)
             .unwrap()

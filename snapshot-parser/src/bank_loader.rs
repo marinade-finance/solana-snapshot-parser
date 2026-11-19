@@ -13,7 +13,7 @@ use {
     },
 };
 
-// The genesis hash names the cluster; a cached genesis of another cluster (or of a reset one) must not load
+// The genesis hash names the cluster; a genesis of another or a reset cluster must not load
 pub fn check_genesis_hash(actual: Hash, expected: Option<Hash>) -> anyhow::Result<()> {
     match expected {
         Some(expected) if expected != actual => anyhow::bail!(
@@ -92,5 +92,31 @@ mod tests {
         check_genesis_hash(actual, Some(actual)).unwrap();
         let err = check_genesis_hash(actual, Some(Hash::new_unique())).unwrap_err();
         assert!(err.to_string().contains(&actual.to_string()), "{err}");
+    }
+
+    // fetch-genesis.bash checks GENESIS_SHA256, the parser GENESIS_HASH; both must name one genesis
+    #[test]
+    fn each_clusters_genesis_sha256_is_its_genesis_hash() {
+        let config = include_str!("../../scripts/cluster-config.bash");
+        let value = |key: &str| {
+            let line = config
+                .lines()
+                .find(|line| line.trim_start().starts_with(&format!("[{key}]=")))
+                .unwrap_or_else(|| panic!("{key} missing from cluster-config.bash"));
+            line.split('"').nth(1).unwrap().to_string()
+        };
+        for cluster in ["mainnet", "testnet"] {
+            let hash: Hash = value(&format!("{cluster}/GENESIS_HASH")).parse().unwrap();
+            let hex: String = hash
+                .to_bytes()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            assert_eq!(
+                hex,
+                value(&format!("{cluster}/GENESIS_SHA256")),
+                "{cluster}"
+            );
+        }
     }
 }

@@ -634,10 +634,11 @@ pub fn generate_validator_collection(
         (validator_rate * capitalization as f64 * epoch_duration_in_years) as u64;
 
     let (alpenglow_epoch_type, alpenglow_migration_slot) = alpenglow_epoch(bank);
-    // never the stakes cache: a snapshot producer may leave it out of the manifest, the accounts it cannot
+    // not bank.vote_accounts(): Firedancer snapshots leave the stakes cache empty
     let live_vote_accounts =
         live_vote_accounts(vote_accounts, stake_accounts, &StakeActivation::new(bank)?);
-    check_against_stakes_cache(&live_vote_accounts, bank)?;
+    // fails loudly to surface divergence from agave; if it gets in the way, consider removing it
+    check_against_stakes_cache(&live_vote_accounts, &bank.vote_accounts())?;
     let features = SnapshotFeatures::from_feature_set(&bank.feature_set);
     let epoch_stakes = bank
         .epoch_stakes(epoch)
@@ -658,7 +659,7 @@ pub fn generate_validator_collection(
     } else {
         None
     };
-    // get_top_epoch_stakes, applied to the vote accounts rebuilt from accounts rather than to the stakes cache
+    // get_top_epoch_stakes, applied to the rebuilt map instead of the stakes cache
     let admitted_vote_accounts = features.admission_filter_active().then(|| {
         VoteAccounts::from(Arc::new(live_vote_accounts.clone())).clone_and_filter_for_vat(
             MAX_ALPENGLOW_VOTE_ACCOUNTS,
