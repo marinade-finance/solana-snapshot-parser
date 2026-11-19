@@ -30,6 +30,10 @@ struct Args {
     #[arg(long, env, value_parser = path_parser)]
     ledger_path: PathBuf,
 
+    /// Refuse to load unless the genesis in the ledger path has this hash
+    #[arg(long, env)]
+    expected_genesis_hash: Option<solana_sdk::hash::Hash>,
+
     /// Path to SQLite DB data to write to (e.g., snapshot.db)
     #[arg(long, env)]
     output_sqlite: String,
@@ -138,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
     //     solana_ledger::genesis_utils::create_genesis_config(100);
     // let bank: Arc<solana_runtime::bank::Bank> = Arc::new(solana_runtime::bank::Bank::new_for_tests(&genesis_config));
     info!("Creating bank from ledger path: {:?}", args.ledger_path);
-    let bank = create_bank_from_ledger(&args.ledger_path)?;
+    let bank = create_bank_from_ledger(&args.ledger_path, args.expected_genesis_hash)?;
     assert!(bank.is_frozen());
     info!(
         "Bank created. Epoch: {}, slot: {}, hash: {}, timestamp from genesis: {}",
@@ -279,6 +283,7 @@ mod tests {
     fn args_of(output_sqlite: &str, output_slot: Option<&str>) -> Args {
         Args {
             ledger_path: PathBuf::from("."),
+            expected_genesis_hash: None,
             output_sqlite: output_sqlite.to_owned(),
             output_slot: output_slot.map(str::to_owned),
             filters: PathBuf::from("."),

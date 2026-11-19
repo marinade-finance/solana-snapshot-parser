@@ -19,6 +19,7 @@ clap = { workspace = true }
 crc = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }
+rayon = { workspace = true }
 serde = { workspace = true }
 snapshot-parser = { workspace = true }
 solana-loader-v3-interface = { workspace = true }

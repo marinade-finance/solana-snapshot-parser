@@ -25,6 +25,31 @@ the leader of that slot may simply have skipped it, leaving no bank there to par
 A bank short of the boundary reads `credits` and the collector vintage that many
 slots early, and publishes the `slot` it read them at.
 
+### The live stakes cache is rebuilt from accounts
+
+Wherever this document says "live stakes cache at `slot`", the parser does not read
+agave's in-memory stakes cache (`bank.vote_accounts()`). It rebuilds the same map from
+the vote and stake program accounts at `slot`: every vote account with lamports that
+is initialized and parses, at the summed `delegation_effective_stake` of the
+delegations to it at the bank's epoch. The reason is that the cache is restored from
+the snapshot manifest, and not every snapshot producer writes it there - Firedancer
+leaves it empty - while every producer writes the accounts. One code path then serves
+Agave and Firedancer snapshots alike.
+
+Whenever the snapshot does carry a stakes cache (every Agave snapshot), the parser
+compares the rebuilt map with it, vote account by vote account, stake and account
+data, and fails on any difference. A snapshot with an empty cache logs a warning and
+skips that comparison. SIMD-0357 admission is agave's own
+`VoteAccounts::clone_and_filter_for_vat` applied to the rebuilt map, which is what
+`bank.get_top_epoch_stakes()` applies to the cache.
+
+From `epoch_stakes` the parser reads only the stake, node, commission, collectors and
+BLS key of keys E and E+1, the fields Firedancer writes there as agave does; it reads
+no lamports, credits or other vote state from `epoch_stakes`. One field still differs
+by producer: Firedancer writes every `epoch_stakes` vote state as V4 (or V5), so
+`inflation_rewards_commission_bps_is_v4` reads `true` for an account agave captured
+as pre-V4. The commission in basis points is the same either way.
+
 ### Which vintage each `validators.json` field is read at
 
 agave keys `Bank::epoch_stakes` by leader schedule epoch, so `epoch_stakes(E)`
@@ -62,9 +87,9 @@ before the epoch ended leads slots that no row here can answer for. It is normal
 has that many vote accounts with no right-hand side, and the parser logs a warning
 naming the count.
 
-`bank.vote_accounts()` is unfiltered while agave pays only the vote accounts
+The live vote accounts are unfiltered while agave pays only the vote accounts
 surviving SIMD-0357 filtering, so `inflation_rewards_admitted` reports how
-`bank.get_top_epoch_stakes()` ruled at `slot`. `false` is narrower than that
+`bank.get_top_epoch_stakes()` would rule at `slot`. `false` is narrower than that
 ruling: agave re-runs the filter on the E+1 activated stakes, and of its three
 criteria only the BLS key is read off the account state this bank already holds,
 so a refusal is published only where that key is missing.

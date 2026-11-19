@@ -23,6 +23,10 @@ struct Args {
     #[arg(long, env, value_parser = path_parser)]
     ledger_path: PathBuf,
 
+    /// Refuse to load unless the genesis in the ledger path has this hash
+    #[arg(long, env)]
+    expected_genesis_hash: Option<solana_sdk::hash::Hash>,
+
     /// Path to write JSON file to for the validator metas (e.g., validators.json)
     #[arg(long, env)]
     output_validator_meta_collection: String,
@@ -105,7 +109,7 @@ fn main() -> anyhow::Result<()> {
     args.validate()?;
 
     info!("Creating bank from ledger path: {:?}", args.ledger_path);
-    let bank = create_bank_from_ledger(&args.ledger_path)?;
+    let bank = create_bank_from_ledger(&args.ledger_path, args.expected_genesis_hash)?;
 
     info!("Scanning accounts from the bank...");
     let scanned_accounts = scan_required_accounts(
@@ -117,6 +121,7 @@ fn main() -> anyhow::Result<()> {
     let require_priority_fee_data = args.require_priority_fee_data;
     let validator_meta_collection_handle = {
         let bank = bank.clone();
+        let vote_accounts = scanned_accounts.vote.clone();
         let stake_accounts = scanned_accounts.stake.clone();
         let tip_distribution = scanned_accounts.tip_distribution.clone();
         let priority_fee_distribution = scanned_accounts.priority_fee_distribution.clone();
@@ -126,6 +131,7 @@ fn main() -> anyhow::Result<()> {
             let call = || -> anyhow::Result<()> {
                 let validator_meta_collection = validator_meta::generate_validator_collection(
                     &bank,
+                    &vote_accounts,
                     &stake_accounts,
                     &tip_distribution,
                     &priority_fee_distribution,
@@ -499,11 +505,19 @@ mod tests {
             "true",
             "--require-leader-schedule",
             "false",
+            "--expected-genesis-hash",
+            "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
         ])
         .expect("mainnet Parse step argv must parse");
         args.validate()
             .expect("mainnet Parse step argv must be valid");
 
+        assert_eq!(
+            args.expected_genesis_hash
+                .map(|hash| hash.to_string())
+                .as_deref(),
+            Some("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d")
+        );
         assert!(args.require_jito_stake_meta);
         assert!(args.require_priority_fee_data);
         assert!(
